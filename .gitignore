@@ -1,4 +1,12 @@
 static/gallery/*
 .venv/*
+venv
+*.bak
 static/camera_config/*
 camera-last-config.json
+
+# ---> macOS
+# General
+.DS_Store
+.AppleDouble
+.LSOverride

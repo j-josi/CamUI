@@ -2,152 +2,152 @@
 
 {% block content %}
 
+<script type="text/javascript" src="{{ url_for('static', filename='js/reader.js') }}"></script>
+
 <div class="mx-4">
     <div class="row">
         <div class="col-lg-8 pb-2">
-            <!-- ###### Main Content ###### -->
-            <h2 class="pb-2 mb-4 border-bottom">Camera: {{camera.Model}}</h2>
-            <img class="img-fluid" id="videoFeed" src="/video_feed_{{camera.Num}}">
-           
-                {% include "animated_logo.html" %}
-         
-       
-            <!--<img id="pimage" 
-            src="{{ url_for('static', filename='gallery/'+last_image) if last_image else url_for('static', filename='gallery/snapshot/default_preview.svg') }}" 
-            class="img-fluid" 
-            alt="Last Captured Image" 
-            onerror="this.onerror=null; this.src='{{ url_for('static', filename='gallery/snapshot/default_preview.svg') }}';">-->
 
-            <div class="container text-center mt-4">
-                <div class="row justify-content-center">
-                    <!-- Desktop Mode Button -->
-                    <div class="col-6">
-                        <button href="/camera_{{ camera.Num }}" class="btn btn-lg w-100 d-flex flex-column align-items-center px-4 btn-success" id="captureButton">
-                            <i class="bi bi-camera fs-2"></i> <!-- Bootstrap Camera Icon -->
-                            <span class="fw-bold mt-1">Capture Image</span>
-                        </button>
-                    </div>
-            
-                    <!-- Mobile Mode Button -->
-                    <div class="col-6">
-                        <div class="btn btn-lg w-100 d-flex flex-column align-items-center px-4 btn-secondary" id="fetch-metadata-btn" onclick="fetchMetadata({{camera.Num}})">
-                            <i class="bi bi-card-list fs-2"></i> <!-- Bootstrap Camera Icon -->
-                            <span class="fw-bold mt-1">Fetch Metadata</span>
-                        </div>
-                    </div>
-                    <div id="metadataDisplay"></div> <!-- Display metadata here -->
+            <h2 class="pb-2 mb-4 border-bottom">Camera: {{camera.Model}}</h2>
+
+            <!-- Container für Video + Overlay -->
+            <div id="videoFeedContainer" class="position-relative" style="aspect-ratio:16/9;">
+                <video id="myvideo" style="width:100%; height:100%; border:none; object-fit:contain;" autoplay muted playsinline></video>
+
+                <!-- Overlay Start Button -->
+                <div id="videoOverlay"
+                     class="position-absolute top-0 start-0 w-100 h-100
+                            align-items-center justify-content-center bg-dark bg-opacity-50"
+                     style="display:none;">
+                    <button id="startButton" class="btn btn-lg btn-light">▶ Stream starten</button>
                 </div>
             </div>
 
-           
+            {% include "animated_logo.html" %}
+
+            <!-- Capture / Metadata Buttons -->
+            <div class="container text-center mt-4">
+                <div class="row justify-content-center">
+
+                    <!-- Capture Button -->
+                    <div class="col-6">
+                        <button class="btn btn-lg w-100 d-flex flex-column align-items-center px-4 btn-success" id="captureButton">
+                            <i class="bi bi-camera fs-2"></i>
+                            <span class="fw-bold mt-1">Capture Image</span>
+                        </button>
+                    </div>
+
+                    <!-- Fetch Metadata -->
+                    <div class="col-6">
+                        <div class="btn btn-lg w-100 d-flex flex-column align-items-center px-4 btn-secondary" onclick="fetchMetadata({{camera.Num}})">
+                            <i class="bi bi-card-list fs-2"></i>
+                            <span class="fw-bold mt-1">Fetch Metadata</span>
+                        </div>
+                    </div>
+
+                    <div id="metadataDisplay"></div>
+                </div>
+            </div>
+
         </div>
+
+        <!-- Camera Controls Sidebar -->
         <div class="col-lg-4 pb-4 overflow-y-scroll" style="height: 100vh; height: -webkit-fill-available; max-height: 100vh; overflow-x: auto; overflow-y: hidden;">
-
-            <!-- Camera Controls -->
-            
-                {% include "camera_controls.html" %}
-
+            {% include "camera_controls.html" %}
         </div>
     </div>
 </div>
 
 <script>
+let reader = null;
+const video = document.getElementById("myvideo");
+const overlay = document.getElementById("videoOverlay");
+const startButton = document.getElementById("startButton");
+
+// Reader initialisieren
+function initReader() {
+    reader = new MediaMTXWebRTCReader({
+        url: "http://192.168.40.17:8889/cam0/whep",
+        user: "",
+        pass: "",
+        token: "",
+        onError: (err) => console.error("WebRTC Error:", err),
+        onTrack: (evt) => video.srcObject = evt.streams[0],
+    });
+}
+
+function isActuallyPlaying(video) {
+    return (
+        video.currentTime > 0 &&
+        !video.paused &&
+        !video.ended &&
+        video.readyState >= 3
+    );
+}
+
+setTimeout(() => {
+    if (!isActuallyPlaying(video)) {
+        overlay.style.display = "flex";
+    }
+}, 1000);
+
+video.addEventListener("playing", () => {
+    console.log("video started playing");
+    overlay.style.display = "none";
+});
+
+
+// Klick auf Start Button -> Video starten + Overlay ausblenden
+startButton.addEventListener("click", () => {
+    video.play().catch(err => console.warn("Play failed:", err));
+    // overlay.style.display = "none";
+});
+
+// Cleanup beim Verlassen der Seite
+window.addEventListener("beforeunload", () => {
+    if (reader) reader.close();
+});
+
+// Capture Button
 document.getElementById("captureButton").addEventListener("click", function(event) {
-    event.preventDefault();  // Prevent form submission if inside a form
-    let button = this;
-    button.disabled = true; // Disable button while processing
+    event.preventDefault();
+    const button = this;
+    button.disabled = true;
     showOverlay();
 
     fetch("/capture_still_{{ camera.Num }}", { method: "POST" })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            console.log('Photo Captured:', data.image);
-        } else {
-            console.error("Capture error:", data.message);
-        }
-    })
-    .catch(error => {
-        console.error("Capture error:", error);
-    })
-    .finally(() => {
-        button.disabled = false; // Re-enable button
-        hideOverlay();
-    });
+        .then(r => r.json())
+        .then(data => {
+            if(data.success) console.log('Photo Captured:', data.image);
+            else console.error('Capture error:', data.message);
+        })
+        .catch(err => console.error("Capture error:", err))
+        .finally(() => {
+            button.disabled = false;
+            hideOverlay();
+        });
 });
 
-function reloadVideoStream() {
-    let img = document.getElementById("videoFeed");
-    if (img) {
-        img.remove();  // Remove the image from the DOM
-    }
-
-    // Create a new image element
-    let newImg = document.createElement("img");
-    newImg.id = "videoFeed";
-    newImg.src = "/video_feed_{{ camera.Num }}?t=" + new Date().getTime();  // Cache-busting
-    newImg.className = "img-fluid";
-    newImg.style = "max-height: 100vh; object-fit: contain;";
-
-    // Append back into the same parent
-    document.querySelector(".col.text-center").appendChild(newImg);
-}
-
+// Fetch Metadata
 function fetchMetadata(cameraNum) {
     fetch(`/fetch_metadata_${cameraNum}`)
-    .then(response => response.json())
-    .then(data => {
-        let metadataHtml = `
-            <table class="table mt-3 table-hover">
-                <thead>
-                    <tr>
-                        <th>Parameter</th>
-                        <th class="position-relative">
-    <div class="d-flex justify-content-center align-items-center">
-        <span class="mx-auto">Value</span>
-        <button id="closeMetadataBtn" aria-label="Close" class="btn-close ms-auto position-absolute end-0 top-50 translate-middle-y" style="transform: translateY(-50%);">
-        </button>
-    </div>
-</th>
-                    </tr>
-                </thead>
-                <tbody>
-        `;
-
-        for (const [key, value] of Object.entries(data)) {
-            metadataHtml += `
-                <tr>
-                    <td><strong>${formatKey(key)}</strong></td>
-                    <td>${formatValue(value)}</td>
-                </tr>
-            `;
-        }
-
-        metadataHtml += `</tbody></table>`;
-        document.getElementById("metadataDisplay").innerHTML = metadataHtml;
-
-        // Add event listener to close the metadata
-        document.getElementById("closeMetadataBtn").addEventListener("click", function() {
-            document.getElementById("metadataDisplay").innerHTML = '';  // Clear the metadata
-        });
-    })
-    .catch(error => {
-        console.error("Error fetching metadata:", error);
-        document.getElementById("metadataDisplay").innerHTML = `<div class="alert alert-danger">Failed to fetch metadata.</div>`;
-    });
+        .then(r => r.json())
+        .then(data => {
+            let html = `<table class="table mt-3 table-hover">
+                            <thead><tr><th>Parameter</th><th>Value</th></tr></thead><tbody>`;
+            for(const [key,val] of Object.entries(data)) {
+                html += `<tr><td>${key}</td><td>${val}</td></tr>`;
+            }
+            html += `</tbody></table>`;
+            document.getElementById("metadataDisplay").innerHTML = html;
+        })
+        .catch(err => console.error("Error fetching metadata:", err));
 }
 
-function formatKey(key) {
-    return key.replace(/([A-Z])/g, " $1").trim(); // Convert camelCase to readable text
-}
-
-function formatValue(value) {
-    if (Array.isArray(value)) {
-        return `[${value.join(", ")}]`; // Display array values in a single line
-    }
-    return value;
-}
-
+initReader();
+console.log("test");
+// autoplay_support = getAutoplayPolicy(mediaelement);
+// console.log("autoplay: ", autoplay_support);
 </script>
 
 {% endblock %}

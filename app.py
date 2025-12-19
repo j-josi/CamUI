@@ -12,9 +12,9 @@ import secrets
 # picamera2 imports
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
-from picamera2.encoders import MJPEGEncoder
-#from picamera2.encoders import H264Encoder
-from picamera2.outputs import FileOutput
+# from picamera2.encoders import MJPEGEncoder
+from picamera2.encoders import H264Encoder
+from picamera2.outputs import FileOutput, PyavOutput
 from libcamera import Transform, controls
 
 # Image handeling imports
@@ -138,22 +138,22 @@ def get_camera_info(camera_model, camera_module_info):
 # Streaming Class and function
 ####################
 
-class StreamingOutput(io.BufferedIOBase):
-    def __init__(self):
-        self.buffer = io.BytesIO()
-        self.condition = Condition()
+# class StreamingOutput(io.BufferedIOBase):
+#     def __init__(self):
+#         self.buffer = io.BytesIO()
+#         self.condition = Condition()
 
-    def write(self, buf):
-        # Clear the buffer before writing the new frame
-        self.buffer.seek(0)
-        self.buffer.truncate()
-        self.buffer.write(buf)
-        with self.condition:
-            self.condition.notify_all()
+#     def write(self, buf):
+#         # Clear the buffer before writing the new frame
+#         self.buffer.seek(0)
+#         self.buffer.truncate()
+#         self.buffer.write(buf)
+#         with self.condition:
+#             self.condition.notify_all()
 
-    def read_frame(self):
-        self.buffer.seek(0)
-        return self.buffer.read()
+#     def read_frame(self):
+#         self.buffer.seek(0)
+#         return self.buffer.read()
 
 ####################
 # CameraObject that will store the itteration of 1 or more cameras
@@ -185,7 +185,7 @@ class CameraObject:
         self.camera_init = False
         # Set capture flag and set placeholder image
         self.capturing_still = False
-        self.placeholder_frame = self.generate_placeholder_frame()  # Create placeholder
+        # self.placeholder_frame = self.generate_placeholder_frame()  # Create placeholder
         
         # Start Stream and sync metadata
         self.start_streaming()
@@ -719,96 +719,102 @@ class CameraObject:
     # Camera Streaming Functions
     #-----
     
-    def generate_stream(self):
-        last_resolution = None  # Track last known resolution
+    # def generate_stream(self):
+    #     last_resolution = None  # Track last known resolution
 
-        while True:
-            if self.capturing_still:
-                frame = self.placeholder_frame
-            else:
-                with self.output.condition:
-                    self.output.condition.wait()
-                    frame = self.output.read_frame()
+    #     while True:
+    #         if self.capturing_still:
+    #             frame = self.placeholder_frame
+    #         else:
+    #             with self.output.condition:
+    #                 self.output.condition.wait()
+    #                 frame = self.output.read_frame()
 
-                # 🚨 Handle invalid frames
-                if frame is None:
-                    print("🚨 Error: read_frame() returned None! Using placeholder.")
-                    frame = self.placeholder_frame
-                    continue  
+    #             # 🚨 Handle invalid frames
+    #             if frame is None:
+    #                 print("🚨 Error: read_frame() returned None! Using placeholder.")
+    #                 frame = self.placeholder_frame
+    #                 continue  
 
-                if not isinstance(frame, bytes):
-                    print(f"⚠️ Warning: Frame is not bytes! Type: {type(frame)}")
-                    frame = self.placeholder_frame
-                    continue  
+    #             if not isinstance(frame, bytes):
+    #                 print(f"⚠️ Warning: Frame is not bytes! Type: {type(frame)}")
+    #                 frame = self.placeholder_frame
+    #                 continue  
 
-                # ✅ Extract actual frame resolution from metadata
-                config = self.picam2.stream_configuration("main")
-                if config is None:
-                    print("🚨 stream_configuration returned None! Skipping frame...")
-                    frame = self.placeholder_frame
-                    continue  
+    #             # ✅ Extract actual frame resolution from metadata
+    #             config = self.picam2.stream_configuration("main")
+    #             if config is None:
+    #                 print("🚨 stream_configuration returned None! Skipping frame...")
+    #                 frame = self.placeholder_frame
+    #                 continue  
 
-                actual_resolution = config["size"]
-                expected_resolution = self.video_config["main"]["size"]
+    #             actual_resolution = config["size"]
+    #             expected_resolution = self.video_config["main"]["size"]
 
-                # 🚨 Detect resolution mismatch
-                if last_resolution is None or actual_resolution != expected_resolution:
-                    print(f"🔄 Resolution change detected: {last_resolution} → {expected_resolution}")
-                    last_resolution = expected_resolution  # Update last known resolution
+    #             # 🚨 Detect resolution mismatch
+    #             if last_resolution is None or actual_resolution != expected_resolution:
+    #                 print(f"🔄 Resolution change detected: {last_resolution} → {expected_resolution}")
+    #                 last_resolution = expected_resolution  # Update last known resolution
 
-                    # 🧹 CLEAR BUFFER to avoid old mismatched frames
-                    self.picam2.stop()
-                    self.picam2.start(show_preview=False)  # Restart stream cleanly
-                    print("✅ Buffer cleared. Restarting stream with new resolution...")
-                    continue  # Skip current frame after restart
+    #                 # 🧹 CLEAR BUFFER to avoid old mismatched frames
+    #                 self.picam2.stop()
+    #                 self.picam2.start(show_preview=False)  # Restart stream cleanly
+    #                 print("✅ Buffer cleared. Restarting stream with new resolution...")
+    #                 continue  # Skip current frame after restart
 
-                # ✅ Check resolution before sending frame
-                if actual_resolution != expected_resolution:
-                    print(f"⚠️ Skipping frame due to resolution mismatch: {actual_resolution} expected: {expected_resolution}")
-                    frame = self.placeholder_frame
-                    continue  
+    #             # ✅ Check resolution before sending frame
+    #             if actual_resolution != expected_resolution:
+    #                 print(f"⚠️ Skipping frame due to resolution mismatch: {actual_resolution} expected: {expected_resolution}")
+    #                 frame = self.placeholder_frame
+    #                 continue  
 
-            # Send frame to the stream
-            yield (b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+    #         # Send frame to the stream
+    #         yield (b'--frame\r\n'
+    #             b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-    def oldgenerate_stream(self):
-        while True:
-            if self.capturing_still:
-                frame = self.placeholder_frame
-            else:
-                # Normal video streaming
-                with self.output.condition:
-                    self.output.condition.wait()  # Wait for new frame
-                    frame = self.output.read_frame()
+    # def oldgenerate_stream(self):
+    #     while True:
+    #         if self.capturing_still:
+    #             frame = self.placeholder_frame
+    #         else:
+    #             # Normal video streaming
+    #             with self.output.condition:
+    #                 self.output.condition.wait()  # Wait for new frame
+    #                 frame = self.output.read_frame()
 
-            # Debugging print statements
-            if frame is None:
-                print("🚨 Error: read_frame() returned None!")
-                continue  # Skip this iteration
+    #         # Debugging print statements
+    #         if frame is None:
+    #             print("🚨 Error: read_frame() returned None!")
+    #             continue  # Skip this iteration
 
-            if not isinstance(frame, bytes):
-                print(f"⚠️ Warning: Frame is not bytes! Type: {type(frame)}")
-                continue  # Skip this iteration
+    #         if not isinstance(frame, bytes):
+    #             print(f"⚠️ Warning: Frame is not bytes! Type: {type(frame)}")
+    #             continue  # Skip this iteration
 
-            # Send frame to the stream
-            yield (b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+    #         # Send frame to the stream
+    #         yield (b'--frame\r\n'
+    #             b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-    def generate_placeholder_frame(self):
-        mode_index = int(self.camera_profile["sensor_mode"])
-        if mode_index < 0 or mode_index >= len(self.sensor_modes):
-            raise ValueError("Invalid sensor mode index")
-        mode = self.sensor_modes[mode_index]
-        img = Image.new('RGB', mode['size'], (33, 37, 41))  # Match video feed size THIS NEEDS WORK FOR THE SCALER CROP
-        draw = ImageDraw.Draw(img)
-        buf = io.BytesIO()
-        img.save(buf, format='JPEG')
-        return buf.getvalue()
+    # def generate_placeholder_frame(self):
+    #     mode_index = int(self.camera_profile["sensor_mode"])
+    #     if mode_index < 0 or mode_index >= len(self.sensor_modes):
+    #         raise ValueError("Invalid sensor mode index")
+    #     mode = self.sensor_modes[mode_index]
+    #     img = Image.new('RGB', mode['size'], (33, 37, 41))  # Match video feed size THIS NEEDS WORK FOR THE SCALER CROP
+    #     draw = ImageDraw.Draw(img)
+    #     buf = io.BytesIO()
+    #     img.save(buf, format='JPEG')
+    #     return buf.getvalue()
+
+    # def start_streaming(self):
+    #     self.output = StreamingOutput()
+    #     self.picam2.start_recording(MJPEGEncoder(), output=FileOutput(self.output))
+    #     print("[INFO] Streaming started")
+    #     time.sleep(1)
 
     def start_streaming(self):
-        self.output = StreamingOutput()
-        self.picam2.start_recording(MJPEGEncoder(), output=FileOutput(self.output))
+        camera_num = self.camera_info['Num']
+        self.picam2.start_recording(H264Encoder(bitrate=8_000_000), output=PyavOutput(f"rtsp://127.0.0.1:8554/cam{camera_num}", format="rtsp"))
         print("[INFO] Streaming started")
         time.sleep(1)
 
@@ -1389,13 +1395,27 @@ def snapshot(camera_num):
     else:
         abort(404)
 
+# Optional: Default /video_feed_0 → /cam/
+# @app.route('/video_feed_<int:camera_num>')
+# def video_feed_default(camera_num):
+#     return video_feed_proxy(camera_num, "cam")
+
 @app.route('/video_feed_<int:camera_num>')
 def video_feed(camera_num):
     camera = cameras.get(camera_num)
-    if camera:
-        return Response(camera.generate_stream(), mimetype='multipart/x-mixed-replace; boundary=frame')
-    else:
+    if camera is None:
         abort(404)
+
+    return redirect(f"http://192.168.40.17:8889/cam{camera_num}/", code=302)
+
+
+# @app.route('/video_feed_<int:camera_num>')
+# def video_feed(camera_num):
+#     camera = cameras.get(camera_num)
+#     if camera:
+#         return Response(camera.generate_stream(), mimetype='multipart/x-mixed-replace; boundary=frame')
+#     else:
+#         abort(404)
 
 @app.route("/toggle_video_feed", methods=["POST"])
 def toggle_video_feed():
