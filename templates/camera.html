@@ -1,111 +1,230 @@
 {% extends "base.html" %}
-
 {% block content %}
 
 <script type="text/javascript" src="{{ url_for('static', filename='js/reader.js') }}"></script>
 
 <div class="mx-4">
-    <div class="row">
-        <div class="col-lg-8 pb-2">
+  <div class="row">
+    <div class="col-lg-8 pb-2">
 
-            <h2 class="pb-2 mb-4 border-bottom">Camera: {{camera.Model}}</h2>
+      <h2 class="pb-2 mb-4 border-bottom">Camera: {{ camera.Model }}</h2>
 
-            <!-- Container für Video + Overlay -->
-            <div id="videoFeedContainer" class="position-relative" style="aspect-ratio:16/9;">
-                <video id="myvideo" style="width:100%; height:100%; border:none; object-fit:contain;" autoplay muted playsinline></video>
+      <!-- Video Container -->
+      <div id="videoFeedContainer" class="position-relative">
+        <!-- video -->
+        <video
+            id="videoFeed"
+            autoplay
+            muted
+            playsinline
+            class="w-100 d-block"
+            style="height:auto; object-fit:contain;">
+        </video>
 
-                <!-- Overlay Start Button -->
-                <div id="videoOverlay"
-                     class="position-absolute top-0 start-0 w-100 h-100
-                            align-items-center justify-content-center bg-dark bg-opacity-50"
-                     style="display:none;">
-                    <button id="startButton" class="btn btn-lg btn-light">▶ Stream starten</button>
-                </div>
+        <!-- videoControls -->
+        <div id="videoControls"
+            class="position-absolute start-0 end-0 bottom-0
+                    justify-content-between align-items-center
+                    px-3 py-2
+                    bg-dark bg-opacity-75 text-white shadow"
+            style="display:none;">
+
+            <!-- volumeContainer -->
+            <div id="volumeContainer" class="d-flex align-items-center gap-2">
+
+                <!-- volumeIcon -->
+                <i id="volumeIcon"
+                class="bi bi-volume-mute text-white"
+                style="font-size:2.4rem; cursor:pointer;"></i>
+
+                <!-- volumeSlider -->
+                <input type="range"
+                    class="form-range"
+                    id="volumeSlider"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value="0"
+                    style="width:100px; height:6px; display:none;">
             </div>
 
-            {% include "animated_logo.html" %}
-
-            <!-- Capture / Metadata Buttons -->
-            <div class="container text-center mt-4">
-                <div class="row justify-content-center">
-
-                    <!-- Capture Button -->
-                    <div class="col-6">
-                        <button class="btn btn-lg w-100 d-flex flex-column align-items-center px-4 btn-success" id="captureButton">
-                            <i class="bi bi-camera fs-2"></i>
-                            <span class="fw-bold mt-1">Capture Image</span>
-                        </button>
-                    </div>
-
-                    <!-- Fetch Metadata -->
-                    <div class="col-6">
-                        <div class="btn btn-lg w-100 d-flex flex-column align-items-center px-4 btn-secondary" onclick="fetchMetadata({{camera.Num}})">
-                            <i class="bi bi-card-list fs-2"></i>
-                            <span class="fw-bold mt-1">Fetch Metadata</span>
-                        </div>
-                    </div>
-
-                    <div id="metadataDisplay"></div>
-                </div>
-            </div>
-
+          <!-- fullscreenButton -->
+          <button id="fsBtn"
+                  class="btn btn-outline-light btn-sm rounded-circle">
+            <i class="bi bi-fullscreen fs-4"></i>
+          </button>
         </div>
 
-        <!-- Camera Controls Sidebar -->
-        <div class="col-lg-4 pb-4 overflow-y-scroll" style="height: 100vh; height: -webkit-fill-available; max-height: 100vh; overflow-x: auto; overflow-y: hidden;">
-            {% include "camera_controls.html" %}
+        <!-- AUTOPLAY FALLBACK -->
+        <div id="videoOverlay"
+             class="position-absolute top-0 start-0 w-100 h-100
+                    align-items-center justify-content-center
+                    bg-dark bg-opacity-50"
+             style="display:none;">
+          <button id="startButton" class="btn btn-lg btn-light">
+            ▶ Stream starten
+          </button>
         </div>
+
+      </div>
+
+      {% include "animated_logo.html" %}
+
+      <!-- Capture / Metadata -->
+      <div class="container text-center mt-4">
+        <div class="row justify-content-center">
+          <div class="col-6">
+            <button class="btn btn-lg w-100 btn-success" id="captureButton">
+              <i class="bi bi-camera fs-2"></i>
+              <span class="fw-bold mt-1 d-block">Capture Image</span>
+            </button>
+          </div>
+          <div class="col-6">
+            <button class="btn btn-lg w-100 btn-secondary"
+                    onclick="fetchMetadata({{ camera.Num }})">
+              <i class="bi bi-card-list fs-2"></i>
+              <span class="fw-bold mt-1 d-block">Fetch Metadata</span>
+            </button>
+          </div>
+          <div id="metadataDisplay"></div>
+        </div>
+      </div>
     </div>
+
+    <div class="col-lg-4 pb-4 overflow-y-scroll" style="height:100vh;">
+      {% include "camera_controls.html" %}
+    </div>
+  </div>
 </div>
 
+<!-- Slider Contrast (Bootstrap-kompatibel) -->
+<style>
+#volumeSlider {
+  filter: brightness(1.2);
+}
+
+#volumeSlider::-webkit-slider-thumb {
+  box-shadow: 0 0 0 0.25rem rgba(255,255,255,.25);
+}
+
+#volumeSlider::-moz-range-thumb {
+  box-shadow: 0 0 0 0.25rem rgba(255,255,255,.25);
+}
+</style>
+
 <script>
-let reader = null;
-const video = document.getElementById("myvideo");
+const video = document.getElementById("videoFeed");
+const videoControls = document.getElementById("videoControls");
+const videoContainer = document.getElementById("videoFeedContainer");
 const overlay = document.getElementById("videoOverlay");
-const startButton = document.getElementById("startButton");
+const startBtn = document.getElementById("startButton");
+const fsBtn = document.getElementById("fsBtn");
+const volumeSlider = document.getElementById("volumeSlider");
+const volumeIcon = document.getElementById("volumeIcon");
+const volumeContainer = document.getElementById("volumeContainer");
 
-// Reader initialisieren
+let reader = null;
+let hideControlsTimeout = null;
+let mouseOverControls = false;
+let previousVolume = 0.75;
+let sliderHideTimeout = null;
+
+/* Hover Volume Slider */
+volumeIcon.addEventListener("mouseenter", () => {
+  clearTimeout(sliderHideTimeout);
+  volumeSlider.style.display = "block";
+});
+
+volumeContainer.addEventListener("mouseleave", () => {
+  sliderHideTimeout = setTimeout(() => {
+    volumeSlider.style.display = "none";
+  }, 150);
+});
+
+/* WebRTC Init */
 function initReader() {
-    reader = new MediaMTXWebRTCReader({
-        url: "http://192.168.40.17:8889/cam0/whep",
-        user: "",
-        pass: "",
-        token: "",
-        onError: (err) => console.error("WebRTC Error:", err),
-        onTrack: (evt) => video.srcObject = evt.streams[0],
-    });
-}
-
-function isActuallyPlaying(video) {
-    return (
-        video.currentTime > 0 &&
-        !video.paused &&
-        !video.ended &&
-        video.readyState >= 3
-    );
-}
-
-setTimeout(() => {
-    if (!isActuallyPlaying(video)) {
-        overlay.style.display = "flex";
+  reader = new MediaMTXWebRTCReader({
+    url: "http://192.168.40.17:8889/cam{{ camera.Num }}/whep",
+    onTrack: evt => {
+      video.srcObject = evt.streams[0];
+      volumeSlider.value = video.volume;
     }
-}, 1000);
+  });
+}
 
-video.addEventListener("playing", () => {
-    console.log("video started playing");
-    overlay.style.display = "none";
+/* Helpers */
+function isPlaying(v) {
+  return v.currentTime > 0 && !v.paused && !v.ended && v.readyState >= 3;
+}
+
+/* Autoplay Fallback */
+setTimeout(() => {
+  if (!isPlaying(video)) overlay.style.display = "flex";
+}, 800);
+
+video.addEventListener("playing", () => overlay.style.display = "none");
+startBtn.addEventListener("click", () => video.play().catch(() => {}));
+
+/* Controls Visibility */
+videoControls.addEventListener("mouseenter", () => mouseOverControls = true);
+videoControls.addEventListener("mouseleave", () => mouseOverControls = false);
+
+function showControlsTemporarily() {
+  videoControls.style.display = "flex";
+  clearTimeout(hideControlsTimeout);
+  hideControlsTimeout = setTimeout(() => {
+    if (!mouseOverControls) videoControls.style.display = "none";
+  }, 2000);
+}
+
+videoContainer.addEventListener("mousemove", showControlsTemporarily);
+
+/* Volume Logic */
+volumeIcon.addEventListener("click", () => {
+  if (!video.muted) {
+    previousVolume = video.volume;
+    video.muted = true;
+    volumeSlider.value = 0;
+    volumeIcon.className = "bi bi-volume-mute text-white";
+  } else {
+    video.muted = false;
+    video.volume = previousVolume;
+    volumeSlider.value = previousVolume;
+    volumeIcon.className =
+      video.volume < 0.5 ? "bi bi-volume-down text-white"
+                         : "bi bi-volume-up text-white";
+  }
 });
 
+volumeSlider.addEventListener("input", () => {
+  video.volume = volumeSlider.value;
+  video.muted = video.volume == 0;
 
-// Klick auf Start Button -> Video starten + Overlay ausblenden
-startButton.addEventListener("click", () => {
-    video.play().catch(err => console.warn("Play failed:", err));
-    // overlay.style.display = "none";
+  volumeIcon.className = video.muted
+    ? "bi bi-volume-mute text-white"
+    : video.volume < 0.5
+      ? "bi bi-volume-down text-white"
+      : "bi bi-volume-up text-white";
+
+  if (video.volume > 0) previousVolume = video.volume;
 });
 
-// Cleanup beim Verlassen der Seite
-window.addEventListener("beforeunload", () => {
-    if (reader) reader.close();
+/* Fullscreen */
+fsBtn.addEventListener("click", () => {
+  if (!document.fullscreenElement) {
+    videoContainer.requestFullscreen();
+  } else {
+    document.exitFullscreen();
+  }
+  mouseOverControls = false;
+  showControlsTemporarily();
+});
+
+document.addEventListener("fullscreenchange", () => {
+  fsBtn.innerHTML = document.fullscreenElement
+    ? '<i class="bi bi-fullscreen-exit fs-4"></i>'
+    : '<i class="bi bi-fullscreen fs-4"></i>';
+  showControlsTemporarily();
 });
 
 // Capture Button
@@ -114,6 +233,7 @@ document.getElementById("captureButton").addEventListener("click", function(even
     const button = this;
     button.disabled = true;
     showOverlay();
+    reader?.close();
 
     fetch("/capture_still_{{ camera.Num }}", { method: "POST" })
         .then(r => r.json())
@@ -124,30 +244,32 @@ document.getElementById("captureButton").addEventListener("click", function(even
         .catch(err => console.error("Capture error:", err))
         .finally(() => {
             button.disabled = false;
-            hideOverlay();
+            initReader();
+            setTimeout(() => {
+                hideOverlay();
+            }, 1000);
         });
 });
 
-// Fetch Metadata
+/* ---------- METADATA ---------- */
 function fetchMetadata(cameraNum) {
-    fetch(`/fetch_metadata_${cameraNum}`)
-        .then(r => r.json())
-        .then(data => {
-            let html = `<table class="table mt-3 table-hover">
-                            <thead><tr><th>Parameter</th><th>Value</th></tr></thead><tbody>`;
-            for(const [key,val] of Object.entries(data)) {
-                html += `<tr><td>${key}</td><td>${val}</td></tr>`;
-            }
-            html += `</tbody></table>`;
-            document.getElementById("metadataDisplay").innerHTML = html;
-        })
-        .catch(err => console.error("Error fetching metadata:", err));
+  fetch(`/fetch_metadata_${cameraNum}`)
+    .then(r => r.json())
+    .then(data => {
+      let html = `<table class="table mt-3 table-hover">
+        <thead><tr><th>Parameter</th><th>Value</th></tr></thead><tbody>`;
+      for (const [k,v] of Object.entries(data)) html += `<tr><td>${k}</td><td>${v}</td></tr>`;
+      html += "</tbody></table>";
+      document.getElementById("metadataDisplay").innerHTML = html;
+    });
 }
 
+/* Cleanup */
+window.addEventListener("beforeunload", () => reader?.close());
+
+/* Start */
 initReader();
-console.log("test");
-// autoplay_support = getAutoplayPolicy(mediaelement);
-// console.log("autoplay: ", autoplay_support);
+video.volume = 0;
 </script>
 
 {% endblock %}
