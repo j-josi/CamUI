@@ -135,27 +135,6 @@ def get_camera_info(camera_model, camera_module_info):
     )
 
 ####################
-# Streaming Class and function
-####################
-
-# class StreamingOutput(io.BufferedIOBase):
-#     def __init__(self):
-#         self.buffer = io.BytesIO()
-#         self.condition = Condition()
-
-#     def write(self, buf):
-#         # Clear the buffer before writing the new frame
-#         self.buffer.seek(0)
-#         self.buffer.truncate()
-#         self.buffer.write(buf)
-#         with self.condition:
-#             self.condition.notify_all()
-
-#     def read_frame(self):
-#         self.buffer.seek(0)
-#         return self.buffer.read()
-
-####################
 # CameraObject that will store the itteration of 1 or more cameras
 ####################
 
@@ -163,17 +142,23 @@ class CameraObject:
     def __init__(self, camera):
         self.camera_init = True
         self.camera_info = camera
+        self.camera_num = self.camera_info['Num']
         # Generate default Camera profile
         self.camera_profile = self.generate_camera_profile()
         # Init camera to picamera2 using the camera number
-        self.picam2 = Picamera2(camera['Num'])
+        self.picam2 = Picamera2(self.camera_num)
         # Get Camera specs
         self.camera_module_spec = self.get_camera_module_spec()
         # Fetch Avaialble Sensor modes and generate available resolutions
         self.sensor_modes = self.picam2.sensor_modes
         self.camera_resolutions = self.generate_camera_resolutions()
-        # Ready buffer for feed
-        self.output = None
+        # Stream Encoder
+        self.encoder_stream = H264Encoder(bitrate=8_000_000)
+        self.encoder_stream.audio = True
+        self.encoder_stream.audio_output = {'codec_name': 'libopus'}
+        self.encoder_stream.audio_sync = 0
+        # Stream Output (PyavOutput processed by Mediamtx)
+        self.output_stream = PyavOutput(f"rtsp://127.0.0.1:8554/cam{self.camera_num}", format="rtsp")
         # Initialize configs as empty dictionaries for the still and video configs
         self.init_configure_camera()
         # Compare camera controls DB flushing out settings not avaialbe from picamera2
@@ -188,6 +173,7 @@ class CameraObject:
         # self.placeholder_frame = self.generate_placeholder_frame()  # Create placeholder
         
         # Start Stream and sync metadata
+        self.active_stream = False
         self.start_streaming()
         self.update_camera_from_metadata()
 
@@ -299,16 +285,15 @@ class CameraObject:
                 else:
                     last_config = {"cameras": []}
                 # Find the matching camera entry
-                camera_num = self.camera_info['Num']
                 updated = False
                 for camera in last_config["cameras"]:
-                    if camera["Num"] == camera_num:
+                    if camera["Num"] == self.camera_num:
                         camera["Has_Config"] = True
                         camera["Config_Location"] = profile_filename
                         updated = True
                         break
                 if not updated:
-                    print(f"Camera {camera_num} not found in camera-last-config.json.")
+                    print(f"Camera {self.camera_num} not found in camera-last-config.json.")
                 with open(last_config_file_path, "w") as f:
                     json.dump(last_config, f, indent=4)
                 print(f"Loaded profile '{profile_filename}' and updated camera-last-config.json.")
@@ -530,7 +515,7 @@ class CameraObject:
             mode = self.sensor_modes[mode_index]
             self.camera_profile["sensor_mode"] = mode_index  
             # Print the mode for debugging
-            print(f"📷 Sensor mode selected for Camera {self.camera_info['Num']}: {mode}")
+            print(f"📷 Sensor mode selected for Camera {self.camera_num}: {mode}")
             # Set still and video configs
             self.still_config = self.picam2.create_still_configuration(
                 sensor={'output_size': mode['size'], 'bit_depth': mode['bit_depth']}
@@ -602,20 +587,19 @@ class CameraObject:
                 else:
                     last_config = {"cameras": []}  # Create an empty structure if missing
                 # Find the camera entry matching the current camera number
-                camera_num = self.camera_info["Num"]
                 updated = False
                 for camera in last_config["cameras"]:
-                    if camera["Num"] == camera_num:
+                    if camera["Num"] == self.camera_num:
                         camera["Has_Config"] = True
                         camera["Config_Location"] = f"{filename}.json"  # Set the new config file
                         updated = True
                         break
                 if not updated:
-                    print(f"Warning: Camera {camera_num} not found in camera-last-config.json.")
+                    print(f"Warning: Camera {self.camera_num} not found in camera-last-config.json.")
                 # Save the updated configuration back
                 with open(last_config_file_path, "w") as f:
                     json.dump(last_config, f, indent=4)
-                print(f"Updated camera-last-config.json for camera {camera_num} after saving profile.")
+                print(f"Updated camera-last-config.json for camera {self.camera_num} after saving profile.")
             except Exception as e:
                 print(f"Error updating camera-last-config.json: {e}")
             return True
@@ -719,108 +703,16 @@ class CameraObject:
     # Camera Streaming Functions
     #-----
     
-    # def generate_stream(self):
-    #     last_resolution = None  # Track last known resolution
-
-    #     while True:
-    #         if self.capturing_still:
-    #             frame = self.placeholder_frame
-    #         else:
-    #             with self.output.condition:
-    #                 self.output.condition.wait()
-    #                 frame = self.output.read_frame()
-
-    #             # 🚨 Handle invalid frames
-    #             if frame is None:
-    #                 print("🚨 Error: read_frame() returned None! Using placeholder.")
-    #                 frame = self.placeholder_frame
-    #                 continue  
-
-    #             if not isinstance(frame, bytes):
-    #                 print(f"⚠️ Warning: Frame is not bytes! Type: {type(frame)}")
-    #                 frame = self.placeholder_frame
-    #                 continue  
-
-    #             # ✅ Extract actual frame resolution from metadata
-    #             config = self.picam2.stream_configuration("main")
-    #             if config is None:
-    #                 print("🚨 stream_configuration returned None! Skipping frame...")
-    #                 frame = self.placeholder_frame
-    #                 continue  
-
-    #             actual_resolution = config["size"]
-    #             expected_resolution = self.video_config["main"]["size"]
-
-    #             # 🚨 Detect resolution mismatch
-    #             if last_resolution is None or actual_resolution != expected_resolution:
-    #                 print(f"🔄 Resolution change detected: {last_resolution} → {expected_resolution}")
-    #                 last_resolution = expected_resolution  # Update last known resolution
-
-    #                 # 🧹 CLEAR BUFFER to avoid old mismatched frames
-    #                 self.picam2.stop()
-    #                 self.picam2.start(show_preview=False)  # Restart stream cleanly
-    #                 print("✅ Buffer cleared. Restarting stream with new resolution...")
-    #                 continue  # Skip current frame after restart
-
-    #             # ✅ Check resolution before sending frame
-    #             if actual_resolution != expected_resolution:
-    #                 print(f"⚠️ Skipping frame due to resolution mismatch: {actual_resolution} expected: {expected_resolution}")
-    #                 frame = self.placeholder_frame
-    #                 continue  
-
-    #         # Send frame to the stream
-    #         yield (b'--frame\r\n'
-    #             b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-
-    # def oldgenerate_stream(self):
-    #     while True:
-    #         if self.capturing_still:
-    #             frame = self.placeholder_frame
-    #         else:
-    #             # Normal video streaming
-    #             with self.output.condition:
-    #                 self.output.condition.wait()  # Wait for new frame
-    #                 frame = self.output.read_frame()
-
-    #         # Debugging print statements
-    #         if frame is None:
-    #             print("🚨 Error: read_frame() returned None!")
-    #             continue  # Skip this iteration
-
-    #         if not isinstance(frame, bytes):
-    #             print(f"⚠️ Warning: Frame is not bytes! Type: {type(frame)}")
-    #             continue  # Skip this iteration
-
-    #         # Send frame to the stream
-    #         yield (b'--frame\r\n'
-    #             b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-
-    # def generate_placeholder_frame(self):
-    #     mode_index = int(self.camera_profile["sensor_mode"])
-    #     if mode_index < 0 or mode_index >= len(self.sensor_modes):
-    #         raise ValueError("Invalid sensor mode index")
-    #     mode = self.sensor_modes[mode_index]
-    #     img = Image.new('RGB', mode['size'], (33, 37, 41))  # Match video feed size THIS NEEDS WORK FOR THE SCALER CROP
-    #     draw = ImageDraw.Draw(img)
-    #     buf = io.BytesIO()
-    #     img.save(buf, format='JPEG')
-    #     return buf.getvalue()
-
-    # def start_streaming(self):
-    #     self.output = StreamingOutput()
-    #     self.picam2.start_recording(MJPEGEncoder(), output=FileOutput(self.output))
-    #     print("[INFO] Streaming started")
-    #     time.sleep(1)
-
     def start_streaming(self):
-        camera_num = self.camera_info['Num']
-        self.picam2.start_recording(H264Encoder(bitrate=8_000_000), output=PyavOutput(f"rtsp://127.0.0.1:8554/cam{camera_num}", format="rtsp"))
+        self.picam2.start_recording(self.encoder_stream, output=self.output_stream)
+        self.active_stream = True
+        # time.sleep(1)
         print("[INFO] Streaming started")
-        time.sleep(1)
 
     def stop_streaming(self):
-        if self.output:  # Ensure streaming was started before stopping
+        if self.active_stream:  # Ensure streaming was started before stopping
             self.picam2.stop_recording()
+            self.active_stream = False
             print("[INFO] Streaming stopped")
 
     #-----
