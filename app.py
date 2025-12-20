@@ -14,7 +14,7 @@ from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
 # from picamera2.encoders import MJPEGEncoder
 from picamera2.encoders import H264Encoder
-from picamera2.outputs import FileOutput, PyavOutput
+from picamera2.outputs import FileOutput, PyavOutput, FfmpegOutput
 from libcamera import Transform, controls
 
 # Image handeling imports
@@ -53,6 +53,9 @@ print(f'\nInitialize picamera2 - Cameras Found:\n{global_cameras}\n')
 version = "2.0.0 - BETA"
 project_title = "CamUI - for picamera2"
 firmware_control = False
+
+# Mediamtx
+mediamtx_webrtc_port = 8889
 
 # Get the directory of the current script
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -140,6 +143,7 @@ def get_camera_info(camera_model, camera_module_info):
 
 class CameraObject:
     def __init__(self, camera):
+        self.lock = threading.Lock()
         self.camera_init = True
         self.camera_info = camera
         self.camera_num = self.camera_info['Num']
@@ -159,6 +163,15 @@ class CameraObject:
         self.encoder_stream.audio_sync = 0
         # Stream Output (PyavOutput processed by Mediamtx)
         self.output_stream = PyavOutput(f"rtsp://127.0.0.1:8554/cam{self.camera_num}", format="rtsp")
+        # Stream activity flag
+        self.active_stream = False
+        # Recording Encoder
+        self.encoder_recording = H264Encoder(bitrate=8_000_000)
+        # Recording Output
+        self.output_recording = None
+        self.filename_recording = None
+        # Recording activity flag
+        self.active_recording = False
         # Initialize configs as empty dictionaries for the still and video configs
         self.init_configure_camera()
         # Compare camera controls DB flushing out settings not avaialbe from picamera2
@@ -171,9 +184,11 @@ class CameraObject:
         # Set capture flag and set placeholder image
         self.capturing_still = False
         # self.placeholder_frame = self.generate_placeholder_frame()  # Create placeholder
-        
+        # Audio
+        # TODO function to detect microphone
+        self.audio = True
+
         # Start Stream and sync metadata
-        self.active_stream = False
         self.start_streaming()
         self.update_camera_from_metadata()
 
@@ -521,7 +536,9 @@ class CameraObject:
                 sensor={'output_size': mode['size'], 'bit_depth': mode['bit_depth']}
             )
             self.video_config = self.picam2.create_video_configuration(
-                main={"size": mode['size']}, sensor={'output_size': mode['size'], 'bit_depth': mode['bit_depth']}
+                main={"size": mode['size']},
+                lores={"size": mode['size']},
+                sensor={'output_size': mode['size'], 'bit_depth': mode['bit_depth']}
             )
             self.configure_video_config()  # Apply new configuration
         except Exception as e:
@@ -704,22 +721,67 @@ class CameraObject:
     #-----
     
     def start_streaming(self):
-        self.picam2.start_recording(self.encoder_stream, output=self.output_stream)
+        if self.active_stream:  # Ensure there is no active stream
+            print("[INFO] Skip starting stream, since there is already an active stream")
+            return
+        self.picam2.start_recording(self.encoder_stream, output=self.output_stream, name="main")
         self.active_stream = True
         # time.sleep(1)
         print("[INFO] Streaming started")
 
     def stop_streaming(self):
-        if self.active_stream:  # Ensure streaming was started before stopping
+        if self.active_stream:  # Ensure there is an active stream
             self.picam2.stop_recording()
             self.active_stream = False
             print("[INFO] Streaming stopped")
+        else:
+            print("[INFO] Skip stopping stream, since there is no active stream")
+
+    #-----
+    # Camera Recording Functions
+    #-----
+
+    def start_recording(self, filename_recording):
+        with self.lock:
+            if self.active_recording:
+                print("[INFO] Skip starting recording, since there is already an active recording")
+                return False, None
+
+            filepath = os.path.join(upload_folder, filename_recording)
+            self.output_recording = FfmpegOutput(filepath, audio=self.audio)
+            self.picam2.start_recording(
+                self.encoder_recording,
+                self.output_recording,
+                name="lores"
+            )
+
+            self.active_recording = True
+            self.filename_recording = filename_recording
+            print(f"[INFO] Recording {filename_recording} started")
+
+            return True, filename_recording
+
+    def stop_recording(self):
+        with self.lock:
+            if not self.active_recording:
+                print("[INFO] Skip stopping recording, since there is no active recording")
+                return False
+
+            self.picam2.stop_recording()
+            self.output_recording = None
+            self.active_recording = False
+            self.active_stream = False
+
+            print(f"[INFO] Recording {self.filename_recording} stopped")
+            self.start_streaming()
+
+            return True
 
     #-----
     # Camera Capture Functions
     #-----
 
-    def take_still(self, camera_num, image_name):
+    def take_still(self, image_name):
         try:
             self.capturing_still = True  # Start sending placeholder frames
             time.sleep(0.5)  # Short delay to allow clients to receive the placeholder
@@ -744,7 +806,7 @@ class CameraObject:
             print(f"Error capturing image: {e}")
             return None
 
-    def take_still_from_feed(self, camera_num, image_name):
+    def take_still_from_feed(self, image_name):
         try:
             filepath = os.path.join(app.config['upload_folder'], image_name)
             request = self.picam2.capture_request()
@@ -1258,7 +1320,7 @@ def capture_still(camera_num):
         logging.debug(f"📁 New image filename: {image_filename}")
 
         # Capture and save the new image
-        image_path = camera.take_still(camera_num, image_filename)
+        image_path = camera.take_still(image_filename)
 
         # Add a slight delay to prevent overlapping captures
         time.sleep(0.5)
@@ -1279,7 +1341,7 @@ def snapshot(camera_num):
     camera = cameras.get(camera_num)
     if camera:
         image_name = f"snapshot_{camera_num}"
-        filepath = camera.take_still_from_feed(camera_num, image_name)
+        filepath = camera.take_still_from_feed(image_name)
         
         if filepath:
             time.sleep(1)  # Ensure the image is saved
@@ -1298,16 +1360,56 @@ def video_feed(camera_num):
     if camera is None:
         abort(404)
 
-    return redirect(f"http://192.168.40.17:8889/cam{camera_num}/", code=302)
+    # Get ip address of this raspberrypi
+    host_ip = request.host.split(":")[0]
+    
+    return redirect(f"http://{host_ip}:{mediamtx_webrtc_port}/cam{camera_num}/", code=302)
 
+@app.route("/video_webrtc_url/<int:camera_num>")
+def video_webrtc_url(camera_num):
+    camera = cameras.get(camera_num)
+    if camera is None:
+        abort(404)
 
-# @app.route('/video_feed_<int:camera_num>')
-# def video_feed(camera_num):
-#     camera = cameras.get(camera_num)
-#     if camera:
-#         return Response(camera.generate_stream(), mimetype='multipart/x-mixed-replace; boundary=frame')
-#     else:
-#         abort(404)
+    # Get ip address of this raspberrypi
+    host_ip = request.host.split(":")[0]
+    
+    return jsonify({
+        "url": f"http://{host_ip}:{mediamtx_webrtc_port}/cam{camera_num}/whep"
+    })
+
+@app.route("/start_recording/<int:camera_num>")
+def start_recording(camera_num):
+    camera = cameras.get(camera_num)
+    if not camera:
+        return jsonify(success=False, error="Invalid camera number"), 400
+
+    # Generate the new filename
+    timestamp = int(time.time())  # Current Unix timestamp
+    filename_recording = f"{timestamp}_cam_{camera_num}.mp4"
+    logging.debug(f"📁 New video filename: {filename_recording}")
+
+    success = camera.start_recording(filename_recording)
+    if success:
+        message = f"Recording of file {filename_recording} started successfully"
+    else:
+        message = "Failed to start recording"
+
+    return jsonify(success=success, message=message)
+
+@app.route("/stop_recording/<int:camera_num>")
+def stop_recording(camera_num):
+    camera = cameras.get(camera_num)
+    if not camera:
+        return jsonify(success=False, error="Invalid camera number"), 400
+
+    success = camera.stop_recording()
+    if success:
+        message = f"Recording of file {camera.filename_recording} stopped successfully"
+    else:
+        message = "Failed to stop recording"
+
+    return jsonify(success=success, message=message)
 
 @app.route("/toggle_video_feed", methods=["POST"])
 def toggle_video_feed():
@@ -1335,7 +1437,7 @@ def preview(camera_num):
         camera = cameras.get(camera_num)
         if camera:
             filepath = f'snapshot/pimage_preview_{camera_num}'
-            preview_path = camera.take_still(camera_num, filepath)
+            preview_path = camera.take_still(filepath)
             return jsonify(success=True, message="Photo captured successfully", image_path=preview_path)
     except Exception as e:
         return jsonify(success=False, message=str(e))
@@ -1610,5 +1712,6 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=8080, help='Port number to run the web server on')
     parser.add_argument('--ip', type=str, default='0.0.0.0', help='IP to which the web server is bound to')
     args = parser.parse_args()
-    # If there are no arguments the port will be 8080 and ip 0.0.0.0 
-    app.run(host=args.ip, port=args.port)
+    # If there are no arguments the port will be 8080 and ip 0.0.0.0
+    # uncoment following line, if no external WSGI server (i.e. Gunicorn) is used and Flask should use its internal server (not recommended for production systems)
+    # app.run(host=args.ip, port=args.port)

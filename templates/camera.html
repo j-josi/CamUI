@@ -11,14 +11,13 @@
 
       <!-- Video Container -->
       <div id="videoFeedContainer" class="position-relative">
-        <!-- video -->
         <video
             id="videoFeed"
             autoplay
             muted
             playsinline
             class="w-100 d-block"
-            style="height:auto; object-fit:contain;">
+            style="object-fit:contain; aspect-ratio: 16 / 9;">
         </video>
 
         <!-- videoControls -->
@@ -55,7 +54,7 @@
           </button>
         </div>
 
-        <!-- AUTOPLAY FALLBACK -->
+        <!-- Disabled autoplay FALLBACK -->
         <div id="videoOverlay"
              class="position-absolute top-0 start-0 w-100 h-100
                     align-items-center justify-content-center
@@ -72,25 +71,37 @@
 
       <!-- Capture / Metadata -->
       <div class="container text-center mt-4">
-        <div class="row justify-content-center">
-          <div class="col-6">
-            <button class="btn btn-lg w-100 btn-success" id="captureButton">
-              <i class="bi bi-camera fs-2"></i>
-              <span class="fw-bold mt-1 d-block">Capture Image</span>
-            </button>
-          </div>
-          <div class="col-6">
-            <button class="btn btn-lg w-100 btn-secondary"
-                    onclick="fetchMetadata({{ camera.Num }})">
-              <i class="bi bi-card-list fs-2"></i>
-              <span class="fw-bold mt-1 d-block">Fetch Metadata</span>
-            </button>
-          </div>
-          <div id="metadataDisplay"></div>
+        <div class="row justify-content-center g-3">
+
+            <!-- Capture Image -->
+            <div class="col-12 col-md-4">
+              <button class="btn btn-lg w-100 btn-success" id="captureButton">
+                  <i class="bi bi-camera fs-2"></i>
+                  <span class="fw-bold mt-1 d-block">Capture Image</span>
+              </button>
+            </div>
+
+            <!-- Record Video -->
+            <div class="col-12 col-md-4">
+              <button class="btn btn-lg w-100 btn-danger" id="recordVideoButton">
+                <i id="recordVideoIcon" class="bi bi-record-circle fs-2"></i>
+                <span id="recordVideoText" class="fw-bold mt-1 d-block">Record Video</span>
+              </button>
+            </div>
+
+            <!-- Fetch Metadata -->
+            <div class="col-12 col-md-4">
+              <button class="btn btn-lg w-100 btn-secondary"
+                      onclick="fetchMetadata()">
+                  <i class="bi bi-card-list fs-2"></i>
+                  <span class="fw-bold mt-1 d-block">Fetch Metadata</span>
+              </button>
+            </div>
+
+            <div id="metadataDisplay" class="mt-3"></div>
         </div>
       </div>
     </div>
-
     <div class="col-lg-4 pb-4 overflow-y-scroll" style="height:100vh;">
       {% include "camera_controls.html" %}
     </div>
@@ -113,6 +124,8 @@
 </style>
 
 <script>
+const cameraNum = {{ camera.Num }};
+
 const video = document.getElementById("videoFeed");
 const videoControls = document.getElementById("videoControls");
 const videoContainer = document.getElementById("videoFeedContainer");
@@ -123,6 +136,7 @@ const volumeSlider = document.getElementById("volumeSlider");
 const volumeIcon = document.getElementById("volumeIcon");
 const volumeContainer = document.getElementById("volumeContainer");
 
+let isRecording = false;
 let reader = null;
 let hideControlsTimeout = null;
 let mouseOverControls = false;
@@ -141,10 +155,13 @@ volumeContainer.addEventListener("mouseleave", () => {
   }, 150);
 });
 
-/* WebRTC Init */
-function initReader() {
+/* Init MediaMTXWebRTCReader */
+async function initReader() {
+  const response = await fetch(`/video_webrtc_url/${cameraNum}`);
+  const data = await response.json();
+
   reader = new MediaMTXWebRTCReader({
-    url: "http://192.168.40.17:8889/cam{{ camera.Num }}/whep",
+    url: data.url,
     onTrack: evt => {
       video.srcObject = evt.streams[0];
       volumeSlider.value = video.volume;
@@ -235,7 +252,7 @@ document.getElementById("captureButton").addEventListener("click", function(even
     showOverlay();
     reader?.close();
 
-    fetch("/capture_still_{{ camera.Num }}", { method: "POST" })
+    fetch(`/capture_still_${cameraNum}`, { method: "POST" })
         .then(r => r.json())
         .then(data => {
             if(data.success) console.log('Photo Captured:', data.image);
@@ -252,7 +269,7 @@ document.getElementById("captureButton").addEventListener("click", function(even
 });
 
 /* ---------- METADATA ---------- */
-function fetchMetadata(cameraNum) {
+function fetchMetadata() {
   fetch(`/fetch_metadata_${cameraNum}`)
     .then(r => r.json())
     .then(data => {
@@ -263,6 +280,76 @@ function fetchMetadata(cameraNum) {
       document.getElementById("metadataDisplay").innerHTML = html;
     });
 }
+
+/* ---------- Video Recording ---------- */
+function startVideoRecording() {
+    fetch(`/start_recording/${cameraNum}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                console.log(data.message || "Recording started");
+                isRecording = true;
+                // updateRecordButton();
+            } else {
+                console.error(data.error || data.message);
+            }
+        })
+        .catch(err => {
+            console.error("Failed to start recording:", err);
+        });
+}
+
+function stopVideoRecording() {
+    fetch(`/stop_recording/${cameraNum}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                console.log(data.message || "Recording stopped");
+                isRecording = false;
+                // updateRecordButton();
+            } else {
+                console.error(data.error || data.message);
+            }
+        })
+        .catch(err => {
+            console.error("Failed to stop recording:", err);
+        });
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+  const recordBtn   = document.getElementById("recordVideoButton");
+  const recordIcon  = document.getElementById("recordVideoIcon");
+  const recordText  = document.getElementById("recordVideoText");
+
+  recordBtn.addEventListener("click", function () {
+
+      isRecording = !isRecording;
+
+      if (isRecording) {
+          // === START RECORDING ===
+          recordBtn.classList.remove("btn-danger");
+          recordBtn.classList.add("btn-warning");
+
+          recordIcon.classList.remove("bi-record-circle");
+          recordIcon.classList.add("bi-stop-circle");
+
+          recordText.textContent = "Stop Recording";
+
+          startVideoRecording();   // <-- Backend/Logic Hook
+      } else {
+          // === STOP RECORDING ===
+          recordBtn.classList.remove("btn-warning");
+          recordBtn.classList.add("btn-danger");
+
+          recordIcon.classList.remove("bi-stop-circle");
+          recordIcon.classList.add("bi-record-circle");
+
+          recordText.textContent = "Record Video";
+
+          stopVideoRecording();    // <-- Backend/Logic Hook
+      }
+  });
+});
 
 /* Cleanup */
 window.addEventListener("beforeunload", () => reader?.close());
