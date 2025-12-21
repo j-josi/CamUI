@@ -1,0 +1,32 @@
+services:
+  camui:
+    container_name: camui
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    privileged: true
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - mediamtx
+    env_file: .env
+    environment:
+      - PULSE_SERVER=unix:/run/user/${UID}/pulse/native
+      - XDG_RUNTIME_DIR=/run/user/${UID}
+    volumes:
+      - /run/udev:/run/udev:ro   # Zugriff auf Kamera-Devices
+      - /dev:/dev
+      - ../static/gallery:/app/static/gallery
+
+      # 🔊 Audio (ESSENTIELL)
+      - /run/user/${UID}:/run/user/${UID}
+    # ports:
+    #   - "80:8080"   # Flask
+    # command: /usr/bin/python3 /app/app.py
+  mediamtx:
+    image: bluenviron/mediamtx:1-ffmpeg-rpi
+    container_name: mediamtx
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./../mediamtx/mediamtx.yml:/mediamtx.yml:ro

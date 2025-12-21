@@ -1,0 +1,9 @@
+# Ignoriere alles in gallery
+static/gallery/
+
+# Optional: andere temporäre Dateien oder Verzeichnisse
+*.pyc
+__pycache__/
+*.log
+*.db
+.git/
