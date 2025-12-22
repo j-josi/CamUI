@@ -17,8 +17,8 @@ New Demo video will be coming soon!
 ## Features
 
 - **Camera Control:** Easily configure camera settings such as image rotation, exposure, white balance settings, and many more. Take control of your Raspberry Pi Camera and instantly see the feedback!
-- **Capture Photos:** Take photos with a single click and save them to the image gallery!
-- **Image Gallery:** View, edit, delete, and download your images in a simple gallery interface.
+- **Capture Photos and Video Recordings:** Take photos and video recordings with a single click and save them to the media gallery!
+- **Media Gallery:** View, edit, delete, and download your images and videos in a simple gallery interface.
 - **Use the stream url:** Video and Snapshot URL's are available to use in applications like OBS, VLC, Home assistent and Octoprint
 - **Multi Camera Support!:** If you are on a Raspberry Pi5 you can connect 2 cameras at the same time CamUI supports using both at the same time
  
@@ -31,7 +31,7 @@ This project was formarally known as 'Picamera2 WebUI' but the name made me feel
 - **Desktop and Mobile mode:** You can choose which template to use that suits your need. New Mobile mode means you get a more touch friendly UI!
 - **Settings all in one place:** Sensor mode has been moved to the camera controls so everything is together.
 - **Capture higher resolution images:** Before images where captured from the video feed. Now there will be a switch in camera modes when capturing photos meaning you get the maximum resoltuion and quality even when your video stream is set to low.
-- **Basic Edit mode in Image Gallery:** If you need to rotate or tweak your image after the fact, you can now do that with some basic edit options in the image gallery
+- **Basic Edit mode in Media Gallery:** If you need to rotate or tweak your image after the fact, you can now do that with some basic edit options in the media gallery
 - **Fetching Metadata:** fetching sensor metadata is now possible.
 - **Removed feature - GPIO:** GPIO has been removed from this version as it needs more work done to get this feature right.
 

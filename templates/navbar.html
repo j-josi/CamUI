@@ -34,7 +34,7 @@
           {% endif %}
 
           <li class="nav-item">
-            <a class="nav-link {% if active_page == 'gallery' %}active{% endif %}" href="{{ url_for('image_gallery') }}">Image Gallery</a>
+            <a class="nav-link {% if active_page == 'media_gallery' %}active{% endif %}" href="{{ url_for('media_gallery') }}">Media Gallery</a>
           </li>
 
           {% if camera_list|length == 1 %}

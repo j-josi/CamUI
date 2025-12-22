@@ -66,13 +66,13 @@ app.config['camera_profile_folder'] = camera_profile_folder
 # Create the folder if it does not exist
 os.makedirs(app.config['camera_profile_folder'], exist_ok=True)
 
-# Set the path where the images will be stored for the image gallery
+# Set the path where the images and videos will be stored for the media gallery
 upload_folder = os.path.join(current_dir, 'static/gallery')
 app.config['upload_folder'] = upload_folder
 # Create the folder if it does not exist
 os.makedirs(app.config['upload_folder'], exist_ok=True)
 
-# For the image gallery set items per page
+# For the media gallery set items per page
 items_per_page = 12
 
 # Define the minimum required configuration
@@ -158,6 +158,7 @@ class CameraObject:
         self.camera_resolutions = self.generate_camera_resolutions()
         # Stream Encoder
         self.encoder_stream = H264Encoder(bitrate=8_000_000)
+        # TODO function to detect microphone
         self.encoder_stream.audio = True
         self.encoder_stream.audio_output = {'codec_name': 'libopus'}
         self.encoder_stream.audio_sync = 0
@@ -852,63 +853,188 @@ class GPIO:
         return self.gpio_pins
 
 ####################
-# ImageGallery Class
+# MediaGallery Class
 ####################
 
-class ImageGallery:
-    def __init__(self, upload_folder, items_per_page=10):
+# class MediaGallery:
+#     def __init__(self, upload_folder, items_per_page=12):
+#         self.upload_folder = upload_folder
+#         self.items_per_page = items_per_page
+#         self.image_exts = ('.jpg', '.jpeg')
+#         self.video_exts = ('.mp4',)
+
+#     def get_media_files(self, type="all"):
+#         try:
+#             files = os.listdir(self.upload_folder)
+#             media = []
+
+#             for f in files:
+#                 ext = os.path.splitext(f)[1].lower()
+#                 if type == "all":
+#                     if ext not in self.image_exts + self.video_exts:
+#                         continue
+#                 elif type == "image":
+#                     if ext not in self.image_exts:
+#                         continue
+#                 elif type == "video":
+#                     if ext not in self.video_exts:
+#                         continue
+#                 else:
+#                     print(f"not allowed media type `{type}` - only allowed values are 'all', 'image' or 'video'")
+#                     break
+
+#                 # Timestamp aus Dateiname
+#                 try:
+#                     unix_ts = int(f.split('_')[-1].split('.')[0])
+#                     timestamp = datetime.utcfromtimestamp(unix_ts).strftime('%Y-%m-%d %H:%M:%S')
+#                 except Exception:
+#                     continue
+
+#                 path = os.path.join(self.upload_folder, f)
+
+#                 item = {
+#                     "filename": f,
+#                     "timestamp": timestamp,
+#                     "type": "video" if ext in self.video_exts else "image",
+#                     "width": None,
+#                     "height": None,
+#                     "has_dng": False,
+#                     "dng_file": None
+#                 }
+
+#                 if item["type"] == "image":
+#                     with Image.open(path) as img:
+#                         item["width"], item["height"] = img.size
+
+#                     dng = os.path.splitext(f)[0] + ".dng"
+#                     item["has_dng"] = os.path.exists(os.path.join(self.upload_folder, dng))
+#                     item["dng_file"] = dng
+
+#                 media.append(item)
+
+
+#             media.sort(key=lambda x: x["timestamp"], reverse=True)
+#             return media
+
+#         except Exception as e:
+#             logging.error(f"Media loading error: {e}")
+#             return []
+
+#     def paginate_media(self, page):
+#         """Paginate media dynamically after the media is deleted."""
+
+#         all_media = self.get_media_files()
+
+#         # Recalculate total pages dynamically
+#         total_pages = max((len(all_media) + self.items_per_page - 1) // self.items_per_page, 1)
+
+#         # Adjust the current page if necessary
+#         if page > total_pages:
+#             page = total_pages  # Ensure we're not on a non-existent page
+
+#         start_index = (page - 1) * self.items_per_page
+#         end_index = start_index + self.items_per_page
+#         paginated_media = all_media[start_index:end_index]
+
+#         return paginated_media, total_pages
+
+#     def delete_media(self, filename):
+#         media_path = os.path.join(self.upload_folder, filename)
+
+#         if os.path.exists(media_path):
+#             try:
+                
+#                 os.remove(media_path)
+#                 logging.info(f"Deleted image: {filename}")
+#                 # Check if corresponding .dng file exists
+#                 dng_file = os.path.splitext(filename)[0] + '.dng'
+#                 print(dng_file)
+#                 has_dng = os.path.exists(os.path.join(self.upload_folder, dng_file))
+#                 print(has_dng)
+#                 if has_dng:
+#                     os.remove(os.path.join(self.upload_folder, dng_file))
+#                 return True, f"Image '{filename}' deleted successfully."
+#             except Exception as e:
+#                 logging.error(f"Error deleting media {filename}: {e}")
+#                 return False, "Failed to delete media"
+#         else:
+#             return False, "Media not found"
+
+
+####################
+# MediaGallery Class
+####################
+
+class MediaGallery:
+    def __init__(self, upload_folder, items_per_page=12):
         self.upload_folder = upload_folder
         self.items_per_page = items_per_page
-        self.items_per_page = 12
+        self.image_exts = ('.jpg', '.jpeg')
+        self.video_exts = ('.mp4',)
 
-    def get_image_files(self):
-         # Fetch image file details, including timestamps, resolution, and DNG presence.
+    def get_media_files(self, type="all"):
         try:
-            image_files = [f for f in os.listdir(self.upload_folder) if f.endswith('.jpg')]
-            files_and_timestamps = []
+            files = os.listdir(self.upload_folder)
+            media = []
 
-            for image_file in image_files:
+            for f in files:
+                ext = os.path.splitext(f)[1].lower()
+                if type == "all":
+                    if ext not in self.image_exts + self.video_exts:
+                        continue
+                elif type == "image":
+                    if ext not in self.image_exts:
+                        continue
+                elif type == "video":
+                    if ext not in self.video_exts:
+                        continue
+                else:
+                    print(f"not allowed media type `{type}` - only allowed values are 'all', 'image' or 'video'")
+                    break
+
                 # Extract timestamp from filename
                 try:
-                    unix_timestamp = int(image_file.split('_')[-1].split('.')[0])
-                    timestamp = datetime.utcfromtimestamp(unix_timestamp).strftime('%Y-%m-%d %H:%M:%S')
-                except ValueError:
-                    logging.warning(f"Skipping file {image_file} due to incorrect timestamp format")
-                    continue  # Skip files with incorrect format
+                    unix_ts = int(f.split('_')[-1].split('.')[0])
+                    timestamp = datetime.utcfromtimestamp(unix_ts).strftime('%Y-%m-%d %H:%M:%S')
+                except Exception:
+                    continue
 
-                # Check if corresponding .dng file exists
-                dng_file = os.path.splitext(image_file)[0] + '.dng'
-                has_dng = os.path.exists(os.path.join(self.upload_folder, dng_file))
+                path = os.path.join(self.upload_folder, f)
 
-                # Get image resolution
-                img_path = os.path.join(self.upload_folder, image_file)
-                with Image.open(img_path) as img:
-                    width, height = img.size
+                item = {
+                    "filename": f,
+                    "timestamp": timestamp,
+                    "type": "video" if ext in self.video_exts else "image",
+                    "width": None,
+                    "height": None,
+                    "has_dng": False,
+                    "dng_file": None
+                }
 
-                # Append file details
-                files_and_timestamps.append({
-                    'filename': image_file,
-                    'timestamp': timestamp,
-                    'has_dng': has_dng,
-                    'dng_file': dng_file,
-                    'width': width,
-                    'height': height
-                })
+                if item["type"] == "image":
+                    with Image.open(path) as img:
+                        item["width"], item["height"] = img.size
 
-            # Sort files by timestamp (newest first)
-            files_and_timestamps.sort(key=lambda x: x['timestamp'], reverse=True)
-            return files_and_timestamps
+                    dng = os.path.splitext(f)[0] + ".dng"
+                    item["has_dng"] = os.path.exists(os.path.join(self.upload_folder, dng))
+                    item["dng_file"] = dng
+
+                media.append(item)
+
+
+            media.sort(key=lambda x: x["timestamp"], reverse=True)
+            return media
 
         except Exception as e:
-            logging.error(f"Error loading image files: {e}")
+            logging.error(f"Media loading error: {e}")
             return []
 
-    def paginate_images(self, page):
-        """Paginate images dynamically after an image is deleted."""
-        all_images = self.get_image_files()
+    def paginate_media(self, page):
+        """Paginate media dynamically after an image is deleted."""
+        all_media = self.get_media_files()
         
         # Recalculate total pages dynamically
-        total_pages = max((len(all_images) + self.items_per_page - 1) // self.items_per_page, 1)
+        total_pages = max((len(all_media) + self.items_per_page - 1) // self.items_per_page, 1)
 
         # Adjust the current page if necessary
         if page > total_pages:
@@ -916,14 +1042,13 @@ class ImageGallery:
 
         start_index = (page - 1) * self.items_per_page
         end_index = start_index + self.items_per_page
-        paginated_images = all_images[start_index:end_index]
+        paginated_media = all_media[start_index:end_index]
 
-        return paginated_images, total_pages
-    
+        return paginated_media, total_pages
 
     def find_last_image_taken(self):
         """Find the most recent image taken."""
-        all_images = self.get_image_files()
+        all_images = self.get_media_files(type="image")
         
         if all_images:
             first_image = all_images[0]
@@ -935,27 +1060,26 @@ class ImageGallery:
         
         return image  # Extract only the filename
     
-    def delete_image(self, filename):
-        image_path = os.path.join(self.upload_folder, filename)
+    def delete_media(self, filename):
+        media_path = os.path.join(self.upload_folder, filename)
 
-        if os.path.exists(image_path):
+        if os.path.exists(media_path):
             try:
-                
-                os.remove(image_path)
-                logging.info(f"Deleted image: {filename}")
+                os.remove(media_path)
+                logging.info(f"Deleted media: {filename}")
                 # Check if corresponding .dng file exists
                 dng_file = os.path.splitext(filename)[0] + '.dng'
-                print(dng_file)
+                # print(dng_file)
                 has_dng = os.path.exists(os.path.join(self.upload_folder, dng_file))
-                print(has_dng)
+                # print(has_dng)
                 if has_dng:
                     os.remove(os.path.join(self.upload_folder, dng_file))
-                return True, f"Image '{filename}' deleted successfully."
+                return True, f"Media '{filename}' deleted successfully."
             except Exception as e:
-                logging.error(f"Error deleting image {filename}: {e}")
-                return False, "Failed to delete image"
+                logging.error(f"Error deleting media {filename}: {e}")
+                return False, "Failed to delete media"
         else:
-            return False, "Image not found"
+            return False, "Media not found"
     
     def save_edit(self, filename, edits, save_option, new_filename=None):
         """Apply edits to an image and save it based on user selection."""
@@ -1266,7 +1390,7 @@ def camera_mobile(camera_num):
         active_mode_index = camera.get_sensor_mode()
         # Find the last image taken by this specific camera
         last_image = None
-        last_image = image_gallery_manager.find_last_image_taken()
+        last_image = media_gallery_manager.find_last_image_taken()
         return render_template('camera_mobile.html', camera=camera.camera_info, settings=live_controls, sensor_modes=sensor_modes, active_mode_index=active_mode_index, last_image=last_image, profiles=list_profiles(),navbar=False, theme='dark', mode="mobile") 
     except Exception as e:
         logging.error(f"Error loading camera view: {e}")
@@ -1284,7 +1408,7 @@ def camera(camera_num):
         active_mode_index = camera.get_sensor_mode()
         # Find the last image taken by this specific camera
         last_image = None
-        last_image = image_gallery_manager.find_last_image_taken()
+        last_image = media_gallery_manager.find_last_image_taken()
         return render_template('camera.html', camera=camera.camera_info, settings=live_controls, sensor_modes=sensor_modes, active_mode_index=active_mode_index, last_image=last_image, profiles=list_profiles(), mode="desktop")
     except Exception as e:
         logging.error(f"Error loading camera view: {e}")
@@ -1572,47 +1696,91 @@ def gpio_setup():
     print(gpio_pins)
     return render_template("gpio_setup.html", gpio_pins = gpio.get_gpio_pins())
 
+# ####################
+# # Media gallery routes 
+# ####################
+
+# media_gallery = MediaGallery(upload_folder)
+
+# @app.route('/gallery')
+# def gallery():
+#     page = request.args.get('page', 1, type=int)
+#     media, total_pages = media_gallery.paginate(page)
+
+#     start_page = max(1, page - 2)
+#     end_page = min(total_pages, page + 2)
+
+#     return render_template(
+#         "media_gallery.html",
+#         media_files=media,
+#         page=page,
+#         total_pages=total_pages,
+#         start_page=start_page,
+#         end_page=end_page,
+#         active_page="gallery"
+#     )
+
+# @app.route('/get_media_for_page')
+# def get_media_for_page():
+#     page = request.args.get('page', 1, type=int)
+#     media, total_pages = media_gallery.paginate(page)
+
+#     return jsonify({
+#         "media_files": media,
+#         "page": page,
+#         "total_pages": total_pages,
+#         "start_page": max(1, page - 2),
+#         "end_page": min(total_pages, page + 2)
+#     })
+
+
+# @app.route('/delete_media/<filename>', methods=['DELETE'])
+# def delete_media(filename):
+#     success, msg = media_gallery.delete(filename)
+#     return jsonify({"success": success, "message": msg}), 200 if success else 404
+
+
 ####################
-# Image gallery routes 
+# Media gallery routes 
 ####################
 
 # Initialize the gallery with the upload folder
-image_gallery_manager = ImageGallery(upload_folder)
+media_gallery_manager = MediaGallery(upload_folder)
 
-@app.route('/image_gallery')
-def image_gallery():
+@app.route('/media_gallery')
+def media_gallery():
     page = request.args.get('page', 1, type=int)
-    images, total_pages = image_gallery_manager.paginate_images(page)
-    cameras_data = [(camera_num, camera) for camera_num, camera in cameras.items()]
-    if not images:
+    media, total_pages = media_gallery_manager.paginate_media(page)
+    # cameras_data = [(camera_num, camera) for camera_num, camera in cameras.items()]
+    if not media:
         return render_template('no_files.html')
     # Define pagination bounds
     start_page = max(1, page - 2)  # Show previous 2 pages
     end_page = min(total_pages, page + 2)  # Show next 2 pages
     return render_template(
-        'image_gallery.html',
-        image_files=images,
+        'media_gallery.html',
+        media_files=media,
         page=page,
         total_pages=total_pages,
         start_page=start_page,
         end_page=end_page,
-        cameras_data=cameras_data,
-        active_page='image_gallery'
+        # cameras_data=cameras_data,
+        active_page='media_gallery'
     )
 
-@app.route('/get_image_for_page')
-def get_image_for_page():
+@app.route('/get_media_for_page')
+def get_media_for_page():
     page = request.args.get('page', 1, type=int)
-    images, total_pages = image_gallery_manager.paginate_images(page)
-    cameras_data = [(camera_num, camera) for camera_num, camera in cameras.items()]
-    if not images:
+    media, total_pages = media_gallery_manager.paginate_media(page)
+    # cameras_data = [(camera_num, camera) for camera_num, camera in cameras.items()]
+    if not media:
         return render_template('no_files.html')
     # Define pagination bounds
     start_page = max(1, page - 2)  # Show previous 2 pages
     end_page = min(total_pages, page + 2)  # Show next 2 pages
     response = {
         
-        'image_files': images,
+        'media_files': media,
         'page': page,
         'total_pages': total_pages,
         'start_page': start_page,
@@ -1624,9 +1792,9 @@ def get_image_for_page():
 def view_image(filename):
     return render_template('view_image.html', filename=filename)
 
-@app.route('/delete_image/<filename>', methods=['DELETE'])
-def delete_image(filename):
-    success, message = image_gallery_manager.delete_image(filename)
+@app.route('/delete_media/<filename>', methods=['DELETE'])
+def delete_media(filename):
+    success, message = media_gallery_manager.delete_media(filename)
 
     if success:
         return jsonify({"success": True, "message": message}), 200
@@ -1678,7 +1846,7 @@ def save_edit():
         save_option = data.get('saveOption')
         new_filename = data.get('newFilename')
 
-        success, message = image_gallery_manager.save_edit(filename, edits, save_option, new_filename)
+        success, message = media_gallery_manager.save_edit(filename, edits, save_option, new_filename)
 
         return jsonify({'success': success, 'message': message})
 
