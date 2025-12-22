@@ -567,26 +567,6 @@ document.addEventListener("DOMContentLoaded", function () {
         });
     });
 
-conversionSwitch.addEventListener("change", () => {
-    const isEnabled = conversionSwitch.checked;
-    const originalStep = slider.dataset.originalStep;
-    const customStep = slider.dataset.conversionStep;
-    const factor = parseFloat(slider.dataset.conversionFactor);
-
-    if (isEnabled && !isNaN(factor)) {
-        if (customStep) {
-            slider.step = customStep;
-        } else {
-            slider.step = (parseFloat(originalStep) / factor).toFixed(6);
-        }
-    } else {
-        slider.step = originalStep;
-    }
-
-    // Update label with newly converted value
-    adjustSliderSetting(settingId, slider.value);
-});
-
 // Function for switch settings
 function toggleSwitchSetting(settingId) {
     let switchElement = document.getElementById(settingId);
@@ -599,27 +579,6 @@ function updateRadioSetting(settingId, value) {
     updateSetting(settingId, value);
     updateRadioChildVisibility(settingId);
 }
-
-document.addEventListener("DOMContentLoaded", function () {
-    const videoToggle = document.getElementById("videoFeedToggle");
-    const videoFeed = document.getElementById("videoFeed");
-
-    videoToggle.addEventListener("change", function () {
-
-        if (this.checked) {
-            videoFeed.src = `/video_feed_${camera_num}`; // Set the correct video stream URL
-        } else {
-            videoFeed.src = "/static/placeholder.jpg"; // Show placeholder when off
-        }
-
-        // Send toggle state and camera number to Flask backend
-        fetch("/toggle_video_feed", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ enable: this.checked, camera_num: camera_num })
-        });
-    });
-});
 
 // Function to fetch and update the profile list
 function updateProfileList() {
