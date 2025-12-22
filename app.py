@@ -12,7 +12,6 @@ import secrets
 # picamera2 imports
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
-# from picamera2.encoders import MJPEGEncoder
 from picamera2.encoders import H264Encoder
 from picamera2.outputs import FileOutput, PyavOutput, FfmpegOutput
 from libcamera import Transform, controls
@@ -1141,6 +1140,34 @@ def camera_info(camera_num):
     camera_module_spec = camera.camera_module_spec
 
     return render_template('camera_info.html', camera_data=camera_module_spec, camera_num=camera_num)
+
+# long polling -> return instantly when state of camera.active_recording changes, otherwise return after 15s
+@app.route("/camera_status_long/<int:camera_num>")
+def camera_status_long(camera_num):
+    try:
+        camera = cameras.get(camera_num)
+        if not camera:
+            return jsonify(success=False, error="Camera not found"), 404
+
+        last_state = request.args.get("state", "false") == "true"
+        timeout = 15
+        start = time.time()
+
+        while time.time() - start < timeout:
+            if camera.active_recording != last_state:
+                return jsonify(
+                    success=True,
+                    active_recording=camera.active_recording
+                )
+            time.sleep(0.2)
+
+        return jsonify(
+            success=True,
+            active_recording=camera.active_recording
+        )
+
+    except Exception as e:
+        return jsonify(success=False, error=str(e)), 500
 
 @app.route("/about")
 def about():
