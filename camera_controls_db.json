@@ -345,7 +345,7 @@
       ]
     },
     {
-      "name": "Output Resolution",
+      "name": "Still Capture Resolution",
       "enabled": true,
       "settings": [
         {
@@ -364,25 +364,39 @@
         {
           "name": "Save RAW DNG",
           "id": "saveRAW",
-          "info": "When enabled the camera will take a Jpg and RAW file from the same buffer. A link will be added to the file in the image gallery for downloading DNG",
+          "info": "When enabled the camera will take a Jpg and RAW file from the same buffer. A link will be added to the file in the media gallery for downloading DNG",
           "type": "switch",
           "label": "Disabled/Enabled",
           "enabled": true,
           "default": false
-        },
-        {
-          "name": "Live Feed Resolution",
-          "id": "LiveFeedResolution",
-          "info": "Controls the resolution of the video feed, allowing for a lower or higher resolution while keeping the sensor mode independent.",
-          "type": "radio",
-          "enabled": false,
-          "default": 0,
-          "options": [
-            { "value": 0, "label": "This needs to be where the resolutions go", "enabled": true }
-          ]
         }
       ]
+    },
+    {
+    "name": "Video Resolutions",
+    "enabled": true,
+    "settings": [
+        {
+        "name": "Recording Resolution",
+        "id": "recording_resolution",
+        "type": "radio",
+        "enabled": true,
+        "source": "video_resolutions",
+        "action": "set_recording_resolution",
+        "default": null,
+        "info": "Resolution used for video recording."
+        },
+        {
+        "name": "Live Stream Resolution",
+        "id": "streaming_resolution",
+        "type": "radio",
+        "enabled": true,
+        "source": "video_resolutions",
+        "action": "set_streaming_resolution",
+        "default": null,
+        "info": "Resolution used for the live stream. Can differ from recording resolution."
+        }
+    ]
     }
-
   ]
 }

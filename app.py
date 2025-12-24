@@ -72,7 +72,11 @@ app.config['upload_folder'] = upload_folder
 os.makedirs(app.config['upload_folder'], exist_ok=True)
 
 # For the media gallery set items per page
-items_per_page = 12
+# items_per_page = 12
+
+# Max. supported resolution of h264 encoder
+ENCODER_MAX = (1920, 1080)
+
 
 # Define the minimum required configuration
 minimum_last_config = {
@@ -154,19 +158,24 @@ class CameraObject:
         self.camera_module_spec = self.get_camera_module_spec()
         # Fetch Avaialble Sensor modes and generate available resolutions
         self.sensor_modes = self.picam2.sensor_modes
+        print(f"DEBUUUUG: Sensor modes: {self.sensor_modes}")
         self.camera_resolutions = self.generate_camera_resolutions()
+        # Get all available video resolutions for this camera/sensor
+        self.video_resolutions = self.generate_video_resolutions()
         # Stream Encoder
         self.encoder_stream = H264Encoder(bitrate=8_000_000)
         # TODO function to detect microphone
         self.encoder_stream.audio = True
         self.encoder_stream.audio_output = {'codec_name': 'libopus'}
         self.encoder_stream.audio_sync = 0
+        self.resolution_stream = self.video_resolutions[0]
         # Stream Output (PyavOutput processed by Mediamtx)
         self.output_stream = PyavOutput(f"rtsp://127.0.0.1:8554/cam{self.camera_num}", format="rtsp")
         # Stream activity flag
         self.active_stream = False
         # Recording Encoder
         self.encoder_recording = H264Encoder(bitrate=8_000_000)
+        self.resolution_recording = self.video_resolutions[0]
         # Recording Output
         self.output_recording = None
         self.filename_recording = None
@@ -176,8 +185,12 @@ class CameraObject:
         self.init_configure_camera()
         # Compare camera controls DB flushing out settings not avaialbe from picamera2
         self.live_controls = self.initialize_controls_template(self.picam2.camera_controls)
+        # Set default video resolution
+        # self._reconfigure_video_pipeline()
+        self.reconfigure_video_pipeline()
+        # self.set_video_resolution(self.resolution_recording)
         # Set the Camers sensor mode 
-        self.set_sensor_mode(self.camera_profile["sensor_mode"])
+        # self.set_sensor_mode(self.camera_profile["sensor_mode"])
         # Load saved camaera profile if one exists
         self.load_saved_camera_profile()
         self.camera_init = False
@@ -187,6 +200,8 @@ class CameraObject:
         # Audio
         # TODO function to detect microphone
         self.audio = True
+        self.main_stream = "recording"
+        self.lores_stream = "streaming"
 
         # Start Stream and sync metadata
         self.start_streaming()
@@ -387,6 +402,15 @@ class CameraObject:
                     setting["options"] = resolution_options
                     section_enabled = True
                     print(f"Updated {setting_id} with generated resolutions")
+                elif source == "video_resolutions":
+                    resolution_options = [
+                        {"value": i, "label": f"{w} x {h}", "enabled": True}
+                        for i, (w, h) in enumerate(self.video_resolutions)
+                    ]
+                    setting["options"] = resolution_options
+                    # Standard auf Index 0 setzen
+                    setting["default"] = 0
+                    section_enabled = True
                 else:
                     print(f"Skipping {setting_id}: No source specified, keeping existing values.")
                     section_enabled = True  
@@ -435,20 +459,34 @@ class CameraObject:
                 print(f"Applied transform: {setting_id} -> {setting_value} (Camera restarted)")
             except ValueError as e:
                 print(f"⚠️ Error: {e}")
-        elif setting_id in ["StillCaptureResolution", "LiveFeedResolution"]:
+        elif setting_id == "StillCaptureResolution":
             try:
                 self.camera_profile['resolutions'][setting_id] = int(setting_value)
                 if setting_id == 'StillCaptureResolution':
                     self.still_config = self.picam2.create_video_configuration(main={"size": self.camera_resolutions[int(setting_value)]})
                     self.update_camera_config()
                     self.camera_profile['resolutions'][setting_id] = int(setting_value)
-
-                if setting_id == 'LiveFeedResolution':
-                    self.set_live_feed_resolution(setting_value)
-
                 print(f"Applied transform: {setting_id} -> {setting_value} (Camera restarted)")
             except ValueError as e:
                 print(f"⚠️ Error: {e}")
+
+        # -----------------------------
+        # Video Resolutions: Recording / Streaming
+        # -----------------------------
+        elif setting_id == "recording_resolution":
+            # setting_value ist Index in camera_resolutions
+            width, height = self.video_resolutions[int(setting_value)]
+            self.set_recording_resolution((width, height))  # ruft reconfigure_video_pipeline() auf
+            self.camera_profile['resolutions'][setting_id] = int(setting_value)
+            print(f"Applied recording_resolution -> {setting_value} ({width}x{height})")
+
+        elif setting_id == "streaming_resolution":
+            width, height = self.video_resolutions[int(setting_value)]
+            self.set_streaming_resolution((width, height))  # ruft reconfigure_video_pipeline() auf
+            self.camera_profile['resolutions'][setting_id] = int(setting_value)
+            print(f"Applied streaming_resolution -> {setting_value} ({width}x{height})")
+
+
         elif setting_id == "saveRAW":
             try:
                 self.camera_profile[setting_id] = setting_value
@@ -521,44 +559,234 @@ class CameraObject:
         self.video_config['transform'] = transform
         print("Applied Orientation - hflip:", transform.hflip, "vflip:", transform.vflip)
     
-    def set_sensor_mode(self, mode_index):
-        try:
-            # Ensure setting_value is an integer (mode index)
-            mode_index = int(mode_index)
-            if mode_index < 0 or mode_index >= len(self.sensor_modes):
-                raise ValueError("Invalid sensor mode index")
-            mode = self.sensor_modes[mode_index]
-            self.camera_profile["sensor_mode"] = mode_index  
-            # Print the mode for debugging
-            print(f"📷 Sensor mode selected for Camera {self.camera_num}: {mode}")
-            # Set still and video configs
-            self.still_config = self.picam2.create_still_configuration(
-                sensor={'output_size': mode['size'], 'bit_depth': mode['bit_depth']}
-            )
+    def generate_video_resolutions(self):
+        resolutions = set()
+
+        for mode in self.sensor_modes:
+            sw, sh = mode["size"]
+
+            # Kandidaten (du kannst das feinjustieren)
+            for w, h in [
+                (1920, 1080),
+                (1536, 864),
+                (1280, 720),
+                (1152, 648),
+                (768, 432),
+            ]:
+                if w <= ENCODER_MAX[0] and h <= ENCODER_MAX[1]:
+                    if w <= sw and h <= sh:
+                        resolutions.add((w, h))
+
+        return sorted(resolutions, reverse=True)
+
+    def find_best_sensor_mode(self, video_resolution):
+        tw, th = video_resolution
+
+        candidates = [
+            m for m in self.sensor_modes
+            if m["size"][0] >= tw and m["size"][1] >= th
+        ]
+
+        if not candidates:
+            raise ValueError("No suitable sensor mode found")
+
+        # kleinste passende Auflösung bevorzugen
+        return min(candidates, key=lambda m: m["size"][0] * m["size"][1])
+
+    # def _max_resolution(self, res_a, res_b):
+    #     return max(res_a, res_b, key=lambda r: r[0] * r[1])
+
+    # def _reconfigure_video_pipeline(self):
+    #     with self.lock:
+    #         # 1️⃣ Größte benötigte Auflösung bestimmen
+    #         sensor_target = self._max_resolution(
+    #             self.resolution_recording,
+    #             self.resolution_stream
+    #         )
+
+    #         # 2️⃣ Sensor Mode bestimmen
+    #         mode = self.find_best_sensor_mode(sensor_target)
+
+    #         print("🔧 Reconfiguring pipeline")
+    #         print(f"🎥 Recording: {self.resolution_recording}")
+    #         print(f"📡 Streaming: {self.resolution_stream}")
+    #         print(f"📷 Sensor mode: {mode['size']}")
+
+    #         was_streaming = self.active_stream
+
+    #         if was_streaming:
+    #             self.stop_streaming()
+
+    #         self.picam2.stop()
+
+    #         # 3️⃣ Video Config bauen
+    #         self.video_config = self.picam2.create_video_configuration(
+    #             main={"size": self.resolution_recording},
+    #             lores={"size": self.resolution_stream},
+    #             sensor={
+    #                 "output_size": mode["size"],
+    #                 "bit_depth": mode["bit_depth"]
+    #             }
+    #         )
+
+    #         self.picam2.configure(self.video_config)
+    #         self.picam2.start()
+
+    #         if was_streaming:
+    #             self.start_streaming()
+
+    #         # 4️⃣ Profil speichern
+    #         self.camera_profile["video_resolution"] = self.resolution_recording
+    #         self.camera_profile["stream_resolution"] = self.resolution_stream
+    #         self.camera_profile["sensor_mode"] = self.sensor_modes.index(mode)
+
+    #         print("✅ Pipeline reconfigured")
+
+
+    def reconfigure_video_pipeline(self):
+        with self.lock:
+            rec = self.resolution_recording
+            stream = self.resolution_stream
+
+            # 1️⃣ Höhere Auflösung bestimmen
+            if rec[0] * rec[1] >= stream[0] * stream[1]:
+                main_size = rec
+                lores_size = stream
+                self.main_stream = "recording"
+                self.lores_stream = "streaming"
+            else:
+                main_size = stream
+                lores_size = rec
+                self.main_stream = "streaming"
+                self.lores_stream = "recording"
+
+            # 2️⃣ Sensor Mode anhand der maximalen Auflösung bestimmen
+            sensor_target = main_size
+            mode = self.find_best_sensor_mode(sensor_target)
+
+            was_streaming = self.active_stream
+            if was_streaming:
+                self.stop_streaming()
+
+            self.picam2.stop()
+
             self.video_config = self.picam2.create_video_configuration(
-                main={"size": mode['size']},
-                lores={"size": mode['size']},
-                sensor={'output_size': mode['size'], 'bit_depth': mode['bit_depth']}
+                main={"size": main_size},
+                lores={"size": lores_size},
+                sensor={
+                    "output_size": mode["size"],
+                    "bit_depth": mode["bit_depth"]
+                }
             )
-            self.configure_video_config()  # Apply new configuration
-        except Exception as e:
-            print(f"Error saving profile: {e}")
-        
 
-    def set_live_feed_resolution(self, resolution_index):
-        with self.sensor_mode_lock:  # Prevent conflicts with sensor mode changes
-            # Ensure resolution_index is an integer
-            resolution_index = int(resolution_index)
-            if resolution_index < 0 or resolution_index >= len(self.camera_resolutions):
-                raise ValueError("Invalid resolution index")
-            
-            resolution = self.camera_resolutions[resolution_index]
-            print(f"Setting live feed resolution to: {resolution}")
+            self.picam2.configure(self.video_config)
+            self.picam2.start()
 
-            # Update video config
-            self.video_config = self.picam2.create_video_configuration(main={"size": resolution})
-            # Apply new configuration
-            self.configure_video_config()
+            if was_streaming:
+                self.start_streaming()
+
+            # 3️⃣ Profil aktualisieren
+            self.camera_profile["video_resolution"] = self.resolution_recording
+            self.camera_profile["stream_resolution"] = self.resolution_stream
+            self.camera_profile["sensor_mode"] = self.sensor_modes.index(mode)
+
+            print("✅ Video pipeline reconfigured")
+            print(f"   main:  {main_size} ({self.main_stream})")
+            print(f"   lores: {lores_size} ({self.lores_stream})")
+
+
+    # def set_recording_resolution(self, resolution):
+    #     self.resolution_recording = resolution
+    #     self._reconfigure_video_pipeline()
+
+    # def set_streaming_resolution(self, resolution):
+    #     self.resolution_stream = resolution
+    #     self._reconfigure_video_pipeline()
+
+
+    def get_recording_stream(self):
+        return "main" if self.main_stream == "recording" else "lores"
+
+    def get_streaming_stream(self):
+        return "main" if self.main_stream == "streaming" else "lores"
+
+    def set_recording_resolution(self, video_resolution):
+        self.resolution_recording = tuple(video_resolution)
+        self.reconfigure_video_pipeline()
+
+    def set_streaming_resolution(self, video_resolution):
+        self.resolution_stream = tuple(video_resolution)
+        self.reconfigure_video_pipeline()
+
+
+
+    # def set_video_resolution(self, video_resolution):
+    #     with self.lock:
+    #         width, height = video_resolution
+
+    #         # determine sensor mode
+    #         mode = self.find_best_sensor_mode(video_resolution)
+
+    #         print(f"🎯 Target video res: {width}x{height}")
+    #         print(f"📷 Using sensor mode: {mode['size']}")
+
+    #         was_streaming = self.active_stream
+
+    #         if was_streaming:
+    #             self.stop_streaming()
+
+    #         self.picam2.stop()
+
+    #         self.video_config = self.picam2.create_video_configuration(
+    #             main={"size": video_resolution},
+    #             lores={"size": video_resolution},
+    #             sensor={
+    #                 "output_size": mode["size"],
+    #                 "bit_depth": mode["bit_depth"]
+    #             }
+    #         )
+
+    #         self.picam2.configure(self.video_config)
+    #         self.resolution_recording = video_resolution
+    #         self.picam2.start()
+
+    #         if was_streaming:
+    #             self.start_streaming()
+
+    #         # save profile
+    #         self.camera_profile["video_resolution"] = video_resolution
+    #         self.camera_profile["sensor_mode"] = self.sensor_modes.index(mode)
+
+    #         print("✅ Video resolution applied")
+
+    # def set_sensor_mode(self, mode_index):
+    #     try:
+    #         # Ensure setting_value is an integer (mode index)
+    #         mode_index = int(mode_index)
+    #         if mode_index < 0 or mode_index >= len(self.sensor_modes):
+    #             raise ValueError("Invalid sensor mode index")
+    #         mode = self.sensor_modes[mode_index]
+    #         self.camera_profile["sensor_mode"] = mode_index  
+    #         # Print the mode for debugging
+    #         print(f"📷 Sensor mode selected for Camera {self.camera_num}: {mode}")
+    #         # Set still and video configs
+    #         self.still_config = self.picam2.create_still_configuration(
+    #             sensor={'output_size': mode['size'], 'bit_depth': mode['bit_depth']}
+    #         )
+    #         # self.video_config = self.picam2.create_video_configuration(
+    #         #     main={"size": mode['size']},
+    #         #     lores={"size": mode['size']},
+    #         #     sensor={'output_size': mode['size'], 'bit_depth': mode['bit_depth']}
+    #         # )
+    #         self.video_config = self.picam2.create_video_configuration(
+    #             main={"size": (1920, 1080)},
+    #             lores={"size": (1920, 1080)},
+    #             sensor={'output_size': mode['size'], 'bit_depth': mode['bit_depth']}
+    #         )
+    #         self.configure_video_config()  # Apply new configuration
+    #     except Exception as e:
+    #         print(f"Error saving profile: {e}")
+
 
     def update_camera_from_metadata(self):
         metadata = self.capture_metadata()
@@ -720,14 +948,30 @@ class CameraObject:
     # Camera Streaming Functions
     #-----
     
+    # def start_streaming(self):
+    #     if self.active_stream:  # Ensure there is no active stream
+    #         print("[INFO] Skip starting stream, since there is already an active stream")
+    #         return
+    #     self.picam2.start_recording(self.encoder_stream, output=self.output_stream, name="main")
+    #     self.active_stream = True
+    #     # time.sleep(1)
+    #     print("[INFO] Streaming started")
+
     def start_streaming(self):
-        if self.active_stream:  # Ensure there is no active stream
+        if self.active_stream:
             print("[INFO] Skip starting stream, since there is already an active stream")
             return
-        self.picam2.start_recording(self.encoder_stream, output=self.output_stream, name="main")
+
+        stream_name = self.get_streaming_stream()
+
+        self.picam2.start_recording(
+            self.encoder_stream,
+            output=self.output_stream,
+            name=stream_name
+        )
+
         self.active_stream = True
-        # time.sleep(1)
-        print("[INFO] Streaming started")
+        print(f"[INFO] Starting streaming on '{stream_name}' stream")
 
     def stop_streaming(self):
         if self.active_stream:  # Ensure there is an active stream
@@ -747,12 +991,14 @@ class CameraObject:
                 print("[INFO] Skip starting recording, since there is already an active recording")
                 return False, None
 
+            stream_name = self.get_recording_stream()
+
             filepath = os.path.join(upload_folder, filename_recording)
             self.output_recording = FfmpegOutput(filepath, audio=self.audio)
             self.picam2.start_recording(
                 self.encoder_recording,
                 self.output_recording,
-                name="lores"
+                name=stream_name
             )
 
             self.active_recording = True
@@ -1324,20 +1570,49 @@ def camera_mobile(camera_num):
         logging.error(f"Error loading camera view: {e}")
         return render_template('error.html', error=str(e))
 
+# @app.route("/camera_<int:camera_num>")
+# def camera(camera_num):
+#     try:
+#         camera = cameras.get(camera_num)
+#         if not camera:
+#             return render_template('camera_not_found.html', camera_num=camera_num)
+#         # Get camera settings
+#         live_controls = camera.live_controls
+#         video_resolutions = camera.video_resolutions
+#         active_recording_resolution = camera.resolution_recording
+#         active_streaming_resolution = camera.resolution_stream
+#         # sensor_modes = camera.sensor_modes
+
+#         # active_mode_index = camera.get_sensor_mode()
+#         # Find the last image taken by this specific camera
+#         last_image = None
+#         last_image = media_gallery_manager.find_last_image_taken()
+#         return render_template('camera.html', camera=camera.camera_info, settings=live_controls, video_resolutions=video_resolutions, active_recording_resolution=active_recording_resolution, active_streaming_resolution=active_streaming_resolution, last_image=last_image, profiles=list_profiles(), mode="desktop")
+#     except Exception as e:
+#         logging.error(f"Error loading camera view: {e}")
+#         return render_template('error.html', error=str(e))
+
 @app.route("/camera_<int:camera_num>")
 def camera(camera_num):
     try:
         camera = cameras.get(camera_num)
         if not camera:
             return render_template('camera_not_found.html', camera_num=camera_num)
-        # Get camera settings
+
+        # Live Controls (alle Settings aus camera_controls_db.json)
         live_controls = camera.live_controls
-        sensor_modes = camera.sensor_modes
-        active_mode_index = camera.get_sensor_mode()
-        # Find the last image taken by this specific camera
-        last_image = None
+
+        # Letztes Bild (optional)
         last_image = media_gallery_manager.find_last_image_taken()
-        return render_template('camera.html', camera=camera.camera_info, settings=live_controls, sensor_modes=sensor_modes, active_mode_index=active_mode_index, last_image=last_image, profiles=list_profiles(), mode="desktop")
+
+        return render_template(
+            'camera.html',
+            camera=camera.camera_info,
+            settings=live_controls,
+            last_image=last_image,
+            profiles=list_profiles(),
+            mode="desktop"
+        )
     except Exception as e:
         logging.error(f"Error loading camera view: {e}")
         return render_template('error.html', error=str(e))
@@ -1518,30 +1793,50 @@ def update_setting():
 def redirect_to_home():
     return redirect(url_for('home'))
 
-@app.route("/set_sensor_mode", methods=["POST"])
-def set_sensor_mode():
+# @app.route("/set_video_resolution", methods=["POST"])
+# def set_video_resolution():
+#     data = request.get_json()
+#     camera = cameras[data["camera_num"]]
+
+#     camera.set_video_resolution((data["width"],data["height"]))
+
+#     return jsonify({"status": "ok"})
+
+# @app.route("/set_recording_resolution", methods=["POST"])
+# def set_recording_resolution():
+#     data = request.get_json()
+#     camera = cameras[data["camera_num"]]
+
+#     camera.set_recording_resolution(
+#         (data["width"], data["height"])
+#     )
+
+#     return jsonify({"status": "ok"})
+
+# @app.route("/set_streaming_resolution", methods=["POST"])
+# def set_streaming_resolution():
+#     data = request.get_json()
+#     camera = cameras[data["camera_num"]]
+
+#     camera.set_streaming_resolution(
+#         (data["width"], data["height"])
+#     )
+
+#     return jsonify({"status": "ok"})
+
+@app.route("/set_recording_resolution", methods=["POST"])
+def set_recording_resolution():
     data = request.get_json()
-    camera_num = data.get("camera_num") 
-    camera = cameras.get(camera_num)
-    sensor_mode = data.get("sensor_mode")
+    cam = cameras[data["camera_num"]]
+    cam.set_recording_resolution((data["width"], data["height"]))
+    return jsonify({"status": "ok"})
 
-    if sensor_mode is None:
-        return jsonify({"status": "error", "message": "No sensor mode provided"}), 400
-
-    try:
-        previous_mode = camera.get_sensor_mode()  # Store previous mode
-        camera.set_sensor_mode(sensor_mode)  # Blocks until done
-        camera.camera_profile["sensor_mode"] = sensor_mode
-
-        print(f"✅ Sensor mode {sensor_mode} applied")
-        return jsonify({"status": "done", "new_mode": sensor_mode})  
-    except ValueError as e:
-        print(f"⚠️ Error: {e}")
-        return jsonify({
-            "status": "error", 
-            "message": str(e), 
-            "previous_mode": previous_mode  # Send back the previous mode
-        }), 400
+@app.route("/set_streaming_resolution", methods=["POST"])
+def set_streaming_resolution():
+    data = request.get_json()
+    cam = cameras[data["camera_num"]]
+    cam.set_streaming_resolution((data["width"], data["height"]))
+    return jsonify({"status": "ok"})
 
 ####################
 # Camera Profile routes 
