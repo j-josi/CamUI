@@ -104,8 +104,8 @@
           "source": "controls",
           "step": 1,
           "min": 1,
-          "max": 66666,
-          "default": 20000,
+          "max": 5,
+          "default": 3,
           "hr": true,
           "conversion": {
               "enabled": true,

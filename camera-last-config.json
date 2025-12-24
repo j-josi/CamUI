@@ -4,8 +4,8 @@
             "Num": 0,
             "Model": "imx708",
             "Is_Pi_Cam": true,
-            "Has_Config": false,
-            "Config_Location": "default_imx708.json"
+            "Has_Config": true,
+            "Config_Location": "default.json"
         }
     ]
 }

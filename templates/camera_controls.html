@@ -74,10 +74,10 @@
 <div class="mt-4"></div>
 
 <!-- ===================================== -->
-<!-- Video Resolution Accordion -->
+<!-- Profile Accordion -->
 <!-- ===================================== -->
 
-<div class="accordion" id="videoResolutionAccordion">
+<div class="accordion" id="ProfileAccordion">
     <!-- Load / Save Profile -->
     <div class="accordion-item">
         <h2 class="accordion-header">
@@ -91,7 +91,7 @@
 
         <div id="collapseProfile"
              class="accordion-collapse collapse"
-             data-bs-parent="#videoResolutionAccordion">
+             data-bs-parent="#ProfileAccordion">
 
             <div class="accordion-body">
 
@@ -108,7 +108,7 @@
                 <div id="loadProfile" class="profile-section">
                     <div class="alert alert-danger d-none" id="configAlert"></div>
 
-                    <table class="table">
+                    <table class="table" id="configTable">
                         <thead>
                             <tr>
                                 <th>Select</th>
@@ -188,49 +188,6 @@
 </div>
     
 <script>
-
-
-function updateRecordingResolution(width, height) {
-    document
-        .querySelectorAll('input[name="recording_resolution"]')
-        .forEach(r => r.disabled = true);
-
-    fetch("/set_recording_resolution", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            camera_num: camera_num,
-            width: width,
-            height: height
-        })
-    })
-    .finally(() => {
-        document
-            .querySelectorAll('input[name="recording_resolution"]')
-            .forEach(r => r.disabled = false);
-    });
-}
-
-function updateStreamingResolution(width, height) {
-    document
-        .querySelectorAll('input[name="streaming_resolution"]')
-        .forEach(r => r.disabled = true);
-
-    fetch("/set_streaming_resolution", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            camera_num: camera_num,
-            width: width,
-            height: height
-        })
-    })
-    .finally(() => {
-        document
-            .querySelectorAll('input[name="streaming_resolution"]')
-            .forEach(r => r.disabled = false);
-    });
-}
 
 
 function showProfileSection(sectionId) {
@@ -333,34 +290,6 @@ function updateUIFromCameraProfile(cameraProfile) {
             console.warn(`Element with ID '${key}' not found.`);
         }
     });
-
-    // Update video resolution
-    if (cameraProfile.video_resolution) {
-        const [w, h] = cameraProfile.video_resolution;
-        const radio = document.getElementById(`video_res_${w}x${h}`);
-        if (radio) {
-            radio.checked = true;
-            console.log(`Set video resolution to ${w}x${h}`);
-        }
-    }
-
-    if (cameraProfile.video_resolution) {
-        const [w, h] = cameraProfile.video_resolution;
-        const radio = document.getElementById(`rec_res_${w}x${h}`);
-        if (radio) {
-            radio.checked = true;
-            console.log(`Set video resolution to ${w}x${h}`);
-        } 
-    }
-
-    if (cameraProfile.stream_resolution) {
-        const [w, h] = cameraProfile.stream_resolution;
-        const radio = document.getElementById(`stream_res_${w}x${h}`);
-        if (radio) {
-            radio.checked = true;
-            console.log(`Set stream resolution to ${w}x${h}`);
-        }
-    }
 
     // Iterate through controls and update UI
     if (cameraProfile.controls) {
@@ -477,11 +406,11 @@ function showAlert(element, type, message) {
         element.classList.add("d-none");
     }, 5000);
 }
-    </script>
+</script>
 
 
 
-</div>
+<!-- </div> -->
 
 
 <!-- JavaScript to toggle child settings visibility based on parent state -->
@@ -537,25 +466,43 @@ function updateRadioChildVisibility(settingId) {
 let camera_num = {{ camera.Num }};
 
 // Generic function to send updated settings to Flask
+// function updateSetting(settingId, newValue) {
+//     fetch("/update_setting", {
+//         method: "POST",
+//         headers: { "Content-Type": "application/json" },
+//         body: JSON.stringify({
+//             camera_num: camera_num, 
+//             id: settingId,
+//             value: newValue
+//         })
+//     })
+//     .then(response => response.json())
+//     .then(data => {
+//         if (data.success) {
+//             console.log(`Updated: Camera ${camera_num}, ${settingId} -> ${newValue}`);
+//         } else {
+//             console.error("Error updating setting:", data.error);
+//         }
+//     })
+//     .catch(error => console.error("Request failed:", error));
+// }
+
 function updateSetting(settingId, newValue) {
     fetch("/update_setting", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-            camera_num: camera_num, 
+            camera_num: camera_num,
             id: settingId,
             value: newValue
         })
     })
-    .then(response => response.json())
+    .then(r => r.json())
     .then(data => {
         if (data.success) {
             console.log(`Updated: Camera ${camera_num}, ${settingId} -> ${newValue}`);
-        } else {
-            console.error("Error updating setting:", data.error);
         }
-    })
-    .catch(error => console.error("Request failed:", error));
+    });
 }
 
 // Function for slider settings
@@ -582,6 +529,7 @@ function adjustSliderSetting(settingId, value) {
     }
 
     // Always send raw value to server
+    console.log("adjustSliderSetting calls updateSetting");
     updateSetting(settingId, value);
 }
 
@@ -621,15 +569,19 @@ document.addEventListener("DOMContentLoaded", function () {
             const conversionSwitch = document.getElementById(settingId + "_conversion");
     
             if (conversionEnabled && conversionSwitch?.checked) {
+                console.log("input_type_range calls adjustSliderSetting");
+                console.log("settingsId:", settingId, "slider.value:", slider.value);
                 adjustSliderSetting(settingId, slider.value);
             }
         });
     });
 
+
 // Function for switch settings
 function toggleSwitchSetting(settingId) {
     let switchElement = document.getElementById(settingId);
     let newValue = switchElement.checked; // true/false
+    console.log("toggleSwitchSetting calls updateSetting");
     updateSetting(settingId, newValue);
 }
 
@@ -645,6 +597,10 @@ function updateProfileList() {
         .then(response => response.json())
         .then(data => {
             const tableBody = document.querySelector("#configTable tbody");
+            if (!tableBody) {
+                console.warn("configTable not found – page not active");
+                return;
+            }
             tableBody.innerHTML = ""; // Clear existing entries
 
             if (data.length === 0) {

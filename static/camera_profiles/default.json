@@ -1,21 +1,21 @@
 {
     "hflip": 0,
     "vflip": 0,
-    "sensor_mode": 0,
-    "live_preview": true,
-    "model": "imx708_wide",
+    "model": "imx708",
     "resolutions": {
-        "StillCaptureResolution": 0
+        "StillCaptureResolution": 0,
+        "recording_resolution": 0,
+        "streaming_resolution": 0
     },
-    "saveRAW": true,
+    "saveRAW": false,
     "controls": {
         "AfMode": 0,
         "LensPosition": 1.0,
         "AfRange": 0,
         "AfSpeed": 0,
-        "ExposureTime": 21309,
-        "AnalogueGain": 1.4992679357528687,
-        "AeEnable": 0,
+        "ExposureTime": 33000,
+        "AnalogueGain": 1.1228070259094238,
+        "AeEnable": 1,
         "ExposureValue": 0.0,
         "AeConstraintMode": 0,
         "AeExposureMode": 0,
@@ -24,10 +24,11 @@
         "AeFlickerPeriod": 100,
         "AwbEnable": 0,
         "AwbMode": 0,
-        "Brightness": 0.0,
+        "Brightness": 0,
         "Contrast": 1.0,
         "Saturation": 1.0,
         "Sharpness": 1.0,
-        "ColourTemperature": 3681
-    }
+        "ColourTemperature": 4000
+    },
+    "sensor_mode": 1
 }
