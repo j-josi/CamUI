@@ -110,21 +110,47 @@ def load_or_initialize_config(file_path, default_config):
         config = default_config
     return config
 
-def list_profiles():
+# def list_profiles():
+#     profiles = []
+#     if not os.path.exists(camera_profile_folder):
+#         os.makedirs(camera_profile_folder)
+    
+#     for filename in os.listdir(camera_profile_folder):
+#         if filename.endswith(".json"):
+#             filepath = os.path.join(camera_profile_folder, filename)
+#             try:
+#                 with open(filepath, "r") as f:
+#                     data = json.load(f)
+#                 model = data.get("model", "Unknown")
+#                 profiles.append({"filename": filename, "model": model})
+#             except Exception as e:
+#                 print(f"Error loading {filename}: {e}")
+#     return profiles
+
+# Load or initialize the configuration
+# camera_last_config = load_or_initialize_config(last_config_file_path, minimum_last_config)
+
+def get_active_profile():
+    return load_or_initialize_config(last_config_file_path, minimum_last_config)
+
+def get_profiles():
     profiles = []
     if not os.path.exists(camera_profile_folder):
         os.makedirs(camera_profile_folder)
-    
-    for filename in os.listdir(camera_profile_folder):
-        if filename.endswith(".json"):
-            filepath = os.path.join(camera_profile_folder, filename)
+
+    for f in os.listdir(camera_profile_folder):
+        if f.endswith(".json"):
+            path = os.path.join(camera_profile_folder, f)
             try:
-                with open(filepath, "r") as f:
-                    data = json.load(f)
-                model = data.get("model", "Unknown")
-                profiles.append({"filename": filename, "model": model})
+                with open(path, "r") as pf:
+                    data = json.load(pf)
+                profiles.append({
+                    "filename": f,
+                    "model": data.get("model", "Unknown"),
+                    "active": (f == get_active_profile()["cameras"][0]["Config_Location"])
+                })
             except Exception as e:
-                print(f"Error loading {filename}: {e}")
+                print(f"Error loading {f}: {e}")
     return profiles
 
 def control_template():
@@ -132,8 +158,7 @@ def control_template():
         settings = json.load(f)
     return settings
 
-# Load or initialize the configuration
-camera_last_config = load_or_initialize_config(last_config_file_path, minimum_last_config)
+
 
 def get_camera_info(camera_model, camera_module_info):
     return next(
@@ -677,7 +702,7 @@ class CameraObject:
         self.camera_profile["resolutions"]["streaming_resolution"] = int(resolution_index)
         self.reconfigure_video_pipeline()
 
-    def save_profile(self, filename):
+    def create_profile(self, filename):
         """Save the current camera profile and update camera-last-config.json."""
         try:
             print(self.camera_profile)
@@ -1178,7 +1203,7 @@ for connected_camera in global_cameras:
     currently_connected_cameras['cameras'].append(camera_info)
 
 # Create a lookup for existing cameras by "Num"
-existing_cameras_lookup = {cam["Num"]: cam for cam in camera_last_config["cameras"]}
+existing_cameras_lookup = {cam["Num"]: cam for cam in get_active_profile()["cameras"]}
 # Prepare the updated list of cameras
 updated_cameras = []
 
@@ -1441,7 +1466,7 @@ def camera_mobile(camera_num):
         # Find the last image taken by this specific camera
         last_image = None
         last_image = media_gallery_manager.find_last_image_taken()
-        return render_template('camera_mobile.html', camera=camera.camera_info, settings=live_controls, sensor_modes=sensor_modes, active_mode_index=active_mode_index, last_image=last_image, profiles=list_profiles(),navbar=False, theme='dark', mode="mobile") 
+        return render_template('camera_mobile.html', camera=camera.camera_info, settings=live_controls, sensor_modes=sensor_modes, active_mode_index=active_mode_index, last_image=last_image, profiles=get_profiles(),navbar=False, theme='dark', mode="mobile") 
     except Exception as e:
         logging.error(f"Error loading camera view: {e}")
         return render_template('error.html', error=str(e))
@@ -1464,7 +1489,7 @@ def camera(camera_num):
             camera=camera.camera_info,
             settings=live_controls,
             last_image=last_image,
-            profiles=list_profiles(),
+            profiles=get_profiles(),
             mode="desktop"
         )
     except Exception as e:
@@ -1652,18 +1677,18 @@ def get_camera_profile():
     camera_profile = camera.camera_profile  # Fetch current controls
     return jsonify(success=True, camera_profile=camera_profile)
 
-@app.route('/save_profile_<int:camera_num>', methods=['POST'])
-def save_profile(camera_num):
+@app.route('/create_profile_<int:camera_num>', methods=['POST'])
+def create_profile(camera_num):
     data = request.json
     filename = data.get("filename")
 
     if not filename:
         return jsonify({"error": "Filename is required"}), 400
     camera = cameras.get(camera_num)
-    success = camera.save_profile(filename)
+    success = camera.create_profile(filename)
 
     if success:
-        return jsonify({"message": f"Profile '{filename}' saved successfully"}), 200
+        return jsonify({"message": f"Profile '{filename}' created successfully"}), 200
     else:
         return jsonify({"error": "Failed to save profile"}), 500
 
@@ -1675,6 +1700,24 @@ def reset_profile(camera_num):
     camera = cameras[camera_num]
     camera.reset_to_default()
     return jsonify({"success": True, "message": "Profile reset to default"})
+
+@app.route("/delete_profile_<int:camera_num>", methods=["POST"])
+def delete_profile(camera_num):
+    data = request.get_json()
+    filename = data.get("filename")
+
+    if not filename:
+        return jsonify({"success": False, "message": "No filename provided"}), 400
+
+    profile_path = os.path.join(camera_profile_folder, filename)
+    if not os.path.exists(profile_path):
+        return jsonify({"success": False, "message": "Profile not found"}), 404
+
+    try:
+        os.remove(profile_path)
+        return jsonify({"success": True, "message": "Profile deleted"})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route("/fetch_metadata_<int:camera_num>")
 def fetch_metadata(camera_num):
@@ -1692,22 +1735,24 @@ def load_profile():
     camera_num = data.get("camera_num")
 
     if not profile_name:
-        return jsonify({"success": False, "error": "Profile name is missing"}), 400
+        return jsonify({"error": "Profile name is missing"}), 400
     if camera_num is None:
-        return jsonify({"success": False, "error": "Camera number is missing"}), 400
+        return jsonify({"error": "Camera number is missing"}), 400
 
     if camera_num in cameras:
         success = cameras[camera_num].load_camera_profile(profile_name)
         if success:
-            return jsonify({"success": True})
+            return jsonify({"message": f"Profile '{profile_name}' loaded successfully"})
         else:
-            return jsonify({"success": False, "error": "Failed to load profile"}), 500
+            return jsonify({"error": "Failed to load profile"}), 500
     else:
-        return jsonify({"success": False, "error": "Invalid camera number"}), 400
-    
+        return jsonify({"error": "Invalid camera number"}), 400
+
 @app.route("/get_profiles")
-def get_profiles():
-    return list_profiles()
+def _get_profiles():
+    # return list_profiles()
+    return get_profiles()
+
 
 ####################
 # GPIO routes 

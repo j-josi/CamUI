@@ -78,14 +78,14 @@
 <!-- ===================================== -->
 
 <div class="accordion" id="ProfileAccordion">
-    <!-- Load / Save Profile -->
+    <!-- Load / Create / Reset / Delete camera profile -->
     <div class="accordion-item">
         <h2 class="accordion-header">
             <button class="accordion-button collapsed"
                     type="button"
                     data-bs-toggle="collapse"
                     data-bs-target="#collapseProfile">
-                Load / Save Camera Profile
+                Camera Profiles
             </button>
         </h2>
 
@@ -99,9 +99,12 @@
                     <button type="button" class="btn btn-primary active"
                             onclick="showProfileSection('loadProfile')">Load</button>
                     <button type="button" class="btn btn-primary"
-                            onclick="showProfileSection('saveProfile')">Save</button>
-                    <button type="button" class="btn btn-danger"
+                            onclick="showProfileSection('createProfile')">Create</button>
+                    <button type="button" class="btn btn-warning"
                             onclick="showProfileSection('resetProfile')">Reset</button>
+                    <button type="button" class="btn btn-danger"
+                            onclick="showProfileSection('deleteProfile')">Delete</button>
+
                 </div>
 
                 <!-- Load Profile -->
@@ -114,54 +117,152 @@
                                 <th>Select</th>
                                 <th>Filename</th>
                                 <th>Model</th>
+                                <th>Active</th>
                             </tr>
                         </thead>
                         <tbody>
                             {% for profile in profiles %}
-                            <tr>
+                            <tr {% if profile.active %}class="table-success"{% endif %}>
                                 <td>
                                     <input type="radio"
-                                           name="selectedConfig"
-                                           value="{{ profile.filename }}"
-                                           data-model="{{ profile.model }}">
+                                        name="selectedConfig"
+                                        value="{{ profile.filename }}"
+                                        data-model="{{ profile.model }}"
+                                        {% if profile.active %}checked{% endif %}>
                                 </td>
                                 <td>{{ profile.filename }}</td>
                                 <td>{{ profile.model }}</td>
+                                <td>
+                                    {% if profile.active %}
+                                        <span class="badge bg-success">Active</span>
+                                    {% else %}
+                                        <span class="text-muted">Inactive</span>
+                                    {% endif %}
+                                </td>
                             </tr>
                             {% else %}
                             <tr>
-                                <td colspan="3">No profiles saved</td>
+                                <td colspan="4">No profiles found</td>
                             </tr>
                             {% endfor %}
                         </tbody>
                     </table>
 
                     <button class="btn btn-primary"
-                            onclick="loadConfigFile()">Load Selected Profile</button>
+                            id="loadProfileBtn"
+                            onclick="loadConfigFile()">
+                        Load Selected Profile
+                    </button>
+
                 </div>
 
-                <!-- Save Profile -->
-                <div id="saveProfile" class="profile-section d-none">
+                <!-- Create Profile -->
+                <div id="createProfile" class="profile-section d-none">
                     <input type="text"
                            class="form-control mb-2"
-                           id="saveConfigFile"
-                           placeholder="Enter filename">
+                           id="createConfigFile"
+                           placeholder="Enter profile name">
                     <button class="btn btn-primary"
-                            onclick="saveProfile({{ camera.Num }})">Save</button>
+                            onclick="createProfile({{ camera.Num }})">Create</button>
                 </div>
 
                 <!-- Reset Profile -->
                 <div id="resetProfile" class="profile-section d-none">
-                    <button class="btn btn-danger"
+                    <button class="btn btn-warning"
                             onclick="resetProfile({{ camera.Num }})">Reset to Default</button>
                 </div>
 
                 <div class="alert alert-danger d-none mt-2" id="profileAlert"></div>
 
+                <!-- Delete Profile -->
+                <div id="deleteProfile" class="profile-section d-none">
+                    <div class="alert alert-danger d-none" id="deleteAlert"></div>
+
+                    <table class="table" id="deleteConfigTable">
+                        <thead>
+                            <tr>
+                                <th>Select</th>
+                                <th>Filename</th>
+                                <th>Model</th>
+                                <th>Active</th> <!-- Neue Spalte -->
+                            </tr>
+                        </thead>
+
+                        <tbody>
+                            {% for profile in profiles %}
+                            <tr {% if profile.active %}class="table-success"{% endif %}>
+                                <td>
+                                    <input type="radio"
+                                        name="selectedDeleteConfig"
+                                        value="{{ profile.filename }}"
+                                        data-model="{{ profile.model }}"
+                                        {% if profile.active %}disabled{% endif %}>
+                                </td>
+                                <td>{{ profile.filename }}</td>
+                                <td>{{ profile.model }}</td>
+                                <td>
+                                    {% if profile.active %}
+                                        <span class="badge bg-success">Active</span>
+                                    {% else %}
+                                        <span class="text-muted">Inactive</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="4">No profiles available to delete</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+
+                    </table>
+
+                    <button class="btn btn-danger"
+                            onclick="requestDeleteProfile({{ camera.Num }})">
+                        Delete Selected Profile
+                    </button>
+
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<!-- ===================================== -->
+<!-- Delete profile confirmation modal -->
+<!-- ===================================== -->
+<div class="modal fade" id="deleteProfileModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-danger">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title">Confirm Profile Deletion</h5>
+                <button type="button" class="btn-close"
+                        data-bs-dismiss="modal"></button>
+            </div>
+
+            <div class="modal-body">
+                <p>
+                    You are about to permanently delete the profile
+                    <strong id="deleteProfileName"></strong>.
+                </p>
+                <p class="text-danger mb-0">
+                    This action cannot be undone.
+                </p>
+            </div>
+
+            <div class="modal-footer">
+                <button class="btn btn-secondary"
+                        data-bs-dismiss="modal">
+                    Cancel
+                </button>
+                <button class="btn btn-danger"
+                        onclick="confirmDeleteProfile()">
+                    Delete Profile
+                </button>
             </div>
         </div>
     </div>
-
 </div>
 
 <!-- ===================================== -->
@@ -189,6 +290,9 @@
     
 <script>
 
+let camera_num = {{ camera.Num }};
+let pendingDeleteCameraNum = null;
+let pendingDeleteFilename = null;
 
 function showProfileSection(sectionId) {
     // Hide all profile sections
@@ -208,8 +312,58 @@ function showProfileSection(sectionId) {
     event.target.classList.add('active');
 }
 
-function saveProfile(cameraNum) {
-    const filename = document.getElementById("saveConfigFile").value;
+
+// Function to load the selected profile
+function loadConfigFile() {
+    const selectedProfile = document.querySelector('input[name="selectedConfig"]:checked');
+    if (!selectedProfile) {
+        alert("Please select a profile to load.");
+        return;
+    }
+
+    const profileName = selectedProfile.value;
+    const profileModel = selectedProfile.getAttribute("data-model");
+    const currentModel = "{{ camera.Model }}";
+
+    if (profileModel !== currentModel) {
+        // Show Bootstrap modal if model mismatch
+        const modalElement = new bootstrap.Modal(document.getElementById("modelMismatchModal"));
+        document.getElementById("mismatchProfileName").textContent = profileName;
+        modalElement.show();
+    } else {
+        applyProfile(profileName);
+    }
+}
+
+function applyProfile(profileName) {
+    const alertBox = document.getElementById("profileAlert");
+
+    fetch(`/load_profile`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            profile_name: profileName,
+            camera_num: camera_num
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.message) {
+            console.log("Profile loaded successfully.");
+            showAlert(alertBox, "success", data.message);
+            updateProfileList(); // Refresh profile list after loading
+            fetchCameraProfile(); 
+        } else {
+            console.log("Failed to load profile: " + data.error);
+        }
+    })
+    .catch(error => console.error("Error loading profile:", error));
+}
+
+function createProfile(cameraNum) {
+    const filename = document.getElementById("createConfigFile").value;
     const alertBox = document.getElementById("profileAlert");
 
     if (!filename) {
@@ -217,7 +371,7 @@ function saveProfile(cameraNum) {
         return;
     }
 
-    fetch(`/save_profile_${cameraNum}`, {
+    fetch(`/create_profile_${cameraNum}`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -230,7 +384,7 @@ function saveProfile(cameraNum) {
             showAlert(alertBox, "success", data.message);
             updateProfileList(); // Refresh profile list after loading
         } else {
-            showAlert(alertBox, "danger", data.error || "Failed to save profile.");
+            showAlert(alertBox, "danger", data.error || "Failed to create profile.");
         }
     })
     .catch(error => {
@@ -247,6 +401,7 @@ function resetProfile(cameraNum) {
     .then(data => {
         if (data.success) {
             showAlert(document.getElementById("profileAlert"), "success", "Profile reset to default!");
+            updateProfileList(); // Refresh profile list after loading
             fetchCameraProfile(); // Fetch updated settings
         } else {
             showAlert(document.getElementById("profileAlert"), "danger", "Error: " + data.message);
@@ -255,6 +410,93 @@ function resetProfile(cameraNum) {
     .catch(error => {
         showAlert(document.getElementById("profileAlert"), "danger", "Request failed: " + error);
     });
+}
+
+function requestDeleteProfile(cameraNum) {
+    const selected =
+        document.querySelector('input[name="selectedDeleteConfig"]:checked');
+
+    if (!selected) {
+        showAlert(
+            document.getElementById("deleteAlert"),
+            "danger",
+            "Please select a profile to delete."
+        );
+        return;
+    }
+
+    if (selected.disabled) {
+        showAlert(
+            document.getElementById("deleteAlert"),
+            "danger",
+            "The active profile cannot be deleted."
+        );
+        return;
+    }
+
+    pendingDeleteCameraNum = cameraNum;
+    pendingDeleteFilename = selected.value;
+
+    document.getElementById("deleteProfileName").textContent =
+        pendingDeleteFilename;
+
+    new bootstrap.Modal(
+        document.getElementById("deleteProfileModal")
+    ).show();
+}
+
+function deleteProfile(cameraNum, filename) {
+    fetch(`/delete_profile_${cameraNum}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showAlert(
+                document.getElementById("deleteAlert"),
+                "success",
+                "Profile deleted successfully."
+            );
+            updateProfileList();
+            fetchCameraProfile();
+        } else {
+            showAlert(
+                document.getElementById("deleteAlert"),
+                "danger",
+                data.message || "Delete failed."
+            );
+        }
+    })
+    .catch(error => {
+        showAlert(
+            document.getElementById("deleteAlert"),
+            "danger",
+            "Request failed: " + error
+        );
+    });
+}
+
+function confirmDeleteProfile() {
+    if (pendingDeleteCameraNum === null || pendingDeleteFilename === null) {
+        console.error("Delete confirmation without pending data");
+        return;
+    }
+
+    deleteProfile(
+        pendingDeleteCameraNum,
+        pendingDeleteFilename
+    );
+
+    pendingDeleteCameraNum = null;
+    pendingDeleteFilename = null;
+
+    bootstrap.Modal
+        .getInstance(
+            document.getElementById("deleteProfileModal")
+        )
+        .hide();
 }
 
 // Fetch updated settings after reset
@@ -406,15 +648,7 @@ function showAlert(element, type, message) {
         element.classList.add("d-none");
     }, 5000);
 }
-</script>
 
-
-
-<!-- </div> -->
-
-
-<!-- JavaScript to toggle child settings visibility based on parent state -->
-<script>
 document.addEventListener("DOMContentLoaded", function () {
     // Initialize visibility for switches
     document.querySelectorAll('.form-check-input[type="checkbox"]').forEach(switchElement => {
@@ -462,30 +696,6 @@ function updateRadioChildVisibility(settingId) {
         }
     }
 }
-
-let camera_num = {{ camera.Num }};
-
-// Generic function to send updated settings to Flask
-// function updateSetting(settingId, newValue) {
-//     fetch("/update_setting", {
-//         method: "POST",
-//         headers: { "Content-Type": "application/json" },
-//         body: JSON.stringify({
-//             camera_num: camera_num, 
-//             id: settingId,
-//             value: newValue
-//         })
-//     })
-//     .then(response => response.json())
-//     .then(data => {
-//         if (data.success) {
-//             console.log(`Updated: Camera ${camera_num}, ${settingId} -> ${newValue}`);
-//         } else {
-//             console.error("Error updating setting:", data.error);
-//         }
-//     })
-//     .catch(error => console.error("Request failed:", error));
-// }
 
 function updateSetting(settingId, newValue) {
     fetch("/update_setting", {
@@ -591,83 +801,89 @@ function updateRadioSetting(settingId, value) {
     updateRadioChildVisibility(settingId);
 }
 
-// Function to fetch and update the profile list
 function updateProfileList() {
     fetch('/get_profiles')
         .then(response => response.json())
         .then(data => {
-            const tableBody = document.querySelector("#configTable tbody");
-            if (!tableBody) {
-                console.warn("configTable not found – page not active");
+            const loadTableBody   = document.querySelector("#configTable tbody");
+            const deleteTableBody = document.querySelector("#deleteConfigTable tbody");
+
+            if (!loadTableBody || !deleteTableBody) return;
+
+            loadTableBody.innerHTML = "";
+            deleteTableBody.innerHTML = "";
+
+            if (!data || data.length === 0) {
+                loadTableBody.innerHTML =
+                    `<tr><td colspan="4">No profiles found</td></tr>`;
+                deleteTableBody.innerHTML =
+                    `<tr><td colspan="4">No profiles found to delete</td></tr>`;
                 return;
             }
-            tableBody.innerHTML = ""; // Clear existing entries
 
-            if (data.length === 0) {
-                tableBody.innerHTML = `<tr><td colspan="3">No profiles saved</td></tr>`;
-                return;
-            }
+            // Active profile always first
+            const sortedProfiles = [
+                ...data.filter(p => p.active),
+                ...data.filter(p => !p.active)
+            ];
 
-            data.forEach((config, index) => {
-                const checked = config.is_selected ? "checked" : "";
-                const row = `
-                    <tr>
+            sortedProfiles.forEach(profile => {
+                const isActive = profile.active === true;
+
+                const rowClass = isActive ? "table-success" : "";
+                const checked  = isActive ? "checked" : "";
+                const disabled = isActive ? "disabled" : "";
+
+                const activeBadge = isActive
+                    ? '<span class="badge bg-success">Active</span>'
+                    : '<span class="text-muted">Inactive</span>';
+
+                /* ---------------- Load table row ---------------- */
+                loadTableBody.insertAdjacentHTML("beforeend", `
+                    <tr class="${rowClass}">
                         <td>
-                            <input type="radio" name="selectedConfig" value="${config.filename}" data-model="${config.model}" ${checked}>
+                            <input type="radio"
+                                   name="selectedConfig"
+                                   value="${profile.filename}"
+                                   data-model="${profile.model}"
+                                   data-active="${isActive}"
+                                   ${checked}>
                         </td>
-                        <td>${config.filename}</td>
-                        <td>${config.model}</td>
-                    </tr>`;
-                tableBody.innerHTML += row;
+                        <td>${profile.filename}</td>
+                        <td>${profile.model}</td>
+                        <td>${activeBadge}</td>
+                    </tr>
+                `);
+
+                /* ---------------- Delete table row ---------------- */
+                deleteTableBody.insertAdjacentHTML("beforeend", `
+                    <tr class="${rowClass}">
+                        <td>
+                            <input type="radio"
+                                   name="selectedDeleteConfig"
+                                   value="${profile.filename}"
+                                   data-model="${profile.model}"
+                                   ${disabled}>
+                        </td>
+                        <td>${profile.filename}</td>
+                        <td>${profile.model}</td>
+                        <td>${activeBadge}</td>
+                    </tr>
+                `);
             });
+
+            /* --- Load selection handling --- */
+            document
+                .querySelectorAll('input[name="selectedConfig"]')
+                .forEach(radio => {
+                    radio.addEventListener("change", () => {
+                        const isActive = radio.dataset.active === "true";
+                    });
+                });
         })
         .catch(error => console.error("Error fetching profiles:", error));
 }
 
-// Function to load the selected profile
-function loadConfigFile() {
-    const selectedProfile = document.querySelector('input[name="selectedConfig"]:checked');
-    if (!selectedProfile) {
-        alert("Please select a profile to load.");
-        return;
-    }
-
-    const profileName = selectedProfile.value;
-    const profileModel = selectedProfile.getAttribute("data-model");
-    const currentModel = "{{ camera.Model }}";
-
-    if (profileModel !== currentModel) {
-        // Show Bootstrap modal if model mismatch
-        const modalElement = new bootstrap.Modal(document.getElementById("modelMismatchModal"));
-        document.getElementById("mismatchProfileName").textContent = profileName;
-        modalElement.show();
-    } else {
-        applyProfile(profileName);
-    }
-}
-
-function applyProfile(profileName) {
-    fetch(`/load_profile`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            profile_name: profileName,
-            camera_num: camera_num
-        })
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            console.log("Profile loaded successfully.");
-            fetchCameraProfile(); 
-        } else {
-            console.log("Failed to load profile: " + data.error);
-        }
-    })
-    .catch(error => console.error("Error loading profile:", error));
-}
 document.addEventListener("DOMContentLoaded", function () {
     updateProfileList();
 
