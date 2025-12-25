@@ -110,26 +110,6 @@ def load_or_initialize_config(file_path, default_config):
         config = default_config
     return config
 
-# def list_profiles():
-#     profiles = []
-#     if not os.path.exists(camera_profile_folder):
-#         os.makedirs(camera_profile_folder)
-    
-#     for filename in os.listdir(camera_profile_folder):
-#         if filename.endswith(".json"):
-#             filepath = os.path.join(camera_profile_folder, filename)
-#             try:
-#                 with open(filepath, "r") as f:
-#                     data = json.load(f)
-#                 model = data.get("model", "Unknown")
-#                 profiles.append({"filename": filename, "model": model})
-#             except Exception as e:
-#                 print(f"Error loading {filename}: {e}")
-#     return profiles
-
-# Load or initialize the configuration
-# camera_last_config = load_or_initialize_config(last_config_file_path, minimum_last_config)
-
 def get_active_profile():
     return load_or_initialize_config(last_config_file_path, minimum_last_config)
 
@@ -157,8 +137,6 @@ def control_template():
     with open(os.path.join(current_dir, "camera_controls_db.json"), "r") as f:
         settings = json.load(f)
     return settings
-
-
 
 def get_camera_info(camera_model, camera_module_info):
     return next(
@@ -239,6 +217,7 @@ class CameraObject:
     #-----
 
     def get_ui_controls(self):
+        # copy camera controls from picamera2.camera_controls (which inherits the values from libcamera driver) and set/crop to custom/reasonable ranges used by ui slider/controls
         ui_controls = copy.deepcopy(self.picam2.camera_controls)
 
         if "ExposureTime" in ui_controls:
@@ -246,7 +225,11 @@ class CameraObject:
             max_exposure_time = 100000 # microseconds
             default_exposure_time = 500
             ui_controls["ExposureTime"] = (min_exposure_time, max_exposure_time, default_exposure_time)
-
+        if "ColourTemperature" in ui_controls:
+            min_color_temp = 100 # Kelvin
+            max_color_temp = 10000 # Kelvin
+            default_color_temp = None
+            ui_controls["ColourTemperature"] = (min_color_temp, max_color_temp, default_color_temp)
         return ui_controls
 
     def init_configure_camera(self):

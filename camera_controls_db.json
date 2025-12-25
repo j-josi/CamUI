@@ -24,7 +24,7 @@
       ]
     },
     {
-      "name": "Auto Focus Settings",
+      "name": "Auto Focus",
       "enabled": true,
       "settings": [
     {
@@ -104,8 +104,8 @@
           "source": "controls",
           "step": 1,
           "min": 1,
-          "max": 5,
-          "default": 3,
+          "max": 66666,
+          "default": 20000,
           "hr": true,
           "conversion": {
               "enabled": true,
@@ -283,7 +283,7 @@
           "label": "Value:",
           "enabled": true,
           "source": "controls",
-          "step": 0.1,
+          "step": 0.01,
           "min": -1.0,
           "max": 1.0,
           "default": 0.0,
@@ -340,7 +340,7 @@
           "source": "controls",
           "step": 1,
           "min": 100,
-          "max": 100000
+          "max": 10000
         }
       ]
     },
