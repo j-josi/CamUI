@@ -258,7 +258,11 @@ def set_theme(theme):
 # Define 'home' route
 @app.route('/')
 def home():
-    camera_list = [(camera.camera_info, get_camera_info(camera.camera_info['Model'], camera_module_info)) for key, camera in cameras.items()]
+    camera_list = [
+        (camera.camera_info, camera.get_camera_module_spec())
+        for camera in camera_manager.cameras.values()  # <-- .values() für CameraObject-Instanzen
+    ]
+
     return render_template('home.html', active_page='home')
 
 @app.route('/camera_info_<int:camera_num>')

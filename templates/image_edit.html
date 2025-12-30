@@ -40,7 +40,11 @@
             </div>
             <div class="modal-body">
                 <p>Choose how to save the image:</p>
-                <input type="text" id="newFilename" class="form-control" placeholder="Enter new filename" value="{{ filename }}_edited">
+                <div class="input-group mb-3">
+                    <input type="text" id="newFilename" class="form-control" placeholder="Enter new filename" 
+                           value="{{ filename.rsplit('.', 1)[0] }}_edited">
+                    <span class="input-group-text">.{{ filename.rsplit('.', 1)[1] }}</span>
+                </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -58,7 +62,9 @@ document.addEventListener("DOMContentLoaded", function () {
     const contrastSlider = document.getElementById("contrast");
     const rotateButton = document.getElementById("rotate-button");
     const alertContainer = document.getElementById("alert-container");
-    
+    const filenameInput = document.getElementById("newFilename");
+    const fileExtSpan = document.querySelector("#newFilename + .input-group-text");
+
     let rotation = 0;  // Track rotation globally
     let scaleFactor = 1;
     const filename = image.getAttribute("data-filename"); 
@@ -71,18 +77,15 @@ document.addEventListener("DOMContentLoaded", function () {
         image.style.transform = `rotate(${rotation}deg) scale(${scaleFactor})`;
     }
 
-
     brightnessSlider.addEventListener("input", updateFilters);
     contrastSlider.addEventListener("input", updateFilters);
 
     rotateButton.addEventListener("click", function () {
-    rotation = (rotation + 90) % 360;
-    scaleFactor = (rotation % 180 !== 0) ? 0.7 : 1;
-    
-    image.style.transform = `rotate(${rotation}deg) scale(${scaleFactor})`;
-
-    console.log(`Rotated to: ${rotation}deg`);
-});
+        rotation = (rotation + 90) % 360;
+        scaleFactor = (rotation % 180 !== 0) ? 0.7 : 1;
+        image.style.transform = `rotate(${rotation}deg) scale(${scaleFactor})`;
+        console.log(`Rotated to: ${rotation}deg`);
+    });
 
     window.resetEdits = function () {
         brightnessSlider.value = 100;
@@ -110,7 +113,12 @@ document.addEventListener("DOMContentLoaded", function () {
     window.saveImage = function (isReplace) {
         const brightness = brightnessSlider.value;
         const contrast = contrastSlider.value;
-        const newFilename = document.getElementById("newFilename").value.trim();
+
+        // Combine full filename from user input (filename) and fixed file-extension
+        const baseName = filenameInput.value.trim();
+        const fileExt = fileExtSpan.textContent.replace(/^\./, ''); // Punkt entfernen
+        const newFilename = `${baseName}.${fileExt}`;
+
         const saveOption = isReplace ? "replace" : "new_file";
 
         fetch("/save_edit", {
@@ -128,7 +136,7 @@ document.addEventListener("DOMContentLoaded", function () {
             showAlert(data.message, data.success ? "success" : "danger");
             if (data.success) {
                 setTimeout(() => {
-                    location.href = "/image_gallery";  
+                    location.href = "/media_gallery";  
                 }, 1500);
             }
         })
@@ -139,4 +147,5 @@ document.addEventListener("DOMContentLoaded", function () {
     };
 });
 </script>
+
 {% endblock %}
