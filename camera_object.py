@@ -31,10 +31,11 @@ ENCODER_MAX = (1920, 1080)
 ####################
 
 class CameraObject:
-    def __init__(self, camera, camera_module_info):
-        self.lock = threading.Lock()
+    def __init__(self, camera, camera_module_info, upload_folder):
         self.camera_info = camera
         self.camera_module_info = camera_module_info
+        self.upload_folder = upload_folder
+        self.lock = threading.Lock()
         self.camera_num = self.camera_info['Num']
         # Generate default Camera profile
         self.camera_profile = self.generate_camera_profile()
@@ -690,7 +691,7 @@ class CameraObject:
             return False, None
 
         stream_name = self.get_recording_stream()
-        filepath = os.path.join(upload_folder, filename_recording)
+        filepath = os.path.join(self.upload_folder, filename_recording)
         output_recording = FfmpegOutput(filepath, audio=self.audio)
 
         try:

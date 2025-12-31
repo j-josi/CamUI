@@ -101,7 +101,8 @@ global_cameras = Picamera2.global_camera_info()
 camera_manager = CameraManager(
     global_cameras=global_cameras,
     camera_module_info=camera_module_info,
-    config_path=os.path.join(current_dir, "camera-last-config.json")
+    config_path=os.path.join(current_dir, "camera-last-config.json"),
+    upload_folder=upload_folder
 )
 
 camera_manager.detect_connected_cameras()

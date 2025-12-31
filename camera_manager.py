@@ -10,7 +10,7 @@ from camera_object import CameraObject  # Annahme: CameraObject ist in camera_ob
 ####################
 
 class CameraManager:
-    def __init__(self, global_cameras: List[dict], camera_module_info: dict, config_path: str):
+    def __init__(self, global_cameras: List[dict], camera_module_info: dict, config_path: str, upload_folder: str):
         """
         :param global_cameras: Liste aller aktuell erkannten Kameras [{'Num': int, 'Model': str}, ...]
         :param camera_module_info: JSON-Daten aus camera-module-info.json
@@ -19,6 +19,7 @@ class CameraManager:
         self.global_cameras = global_cameras
         self.camera_module_info = camera_module_info
         self.config_path = config_path
+        self.upload_folder = upload_folder
 
         self.currently_connected_cameras: List[dict] = []
         self.cameras: Dict[int, CameraObject] = {}
@@ -94,7 +95,7 @@ class CameraManager:
         """Erstelle CameraObject Instanzen für alle verbundenen Kameras."""
         for cam_info in self.currently_connected_cameras:
             # Übergabe der Kamera-Info und des camera_module_info
-            camera_obj = CameraObject(cam_info, self.camera_module_info)
+            camera_obj = CameraObject(cam_info, self.camera_module_info, self.upload_folder)
             self.cameras[cam_info["Num"]] = camera_obj
 
         # Debug-Ausgabe
