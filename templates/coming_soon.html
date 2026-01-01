@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="alert alert-danger text-center" role="alert">
+        <h4 class="alert-heading">Coming soon...</h4>
+        <p>Feature '{{ feature }}' is still in development</p>
+        <hr>
+        <p class="mb-0">Back to <a href="{{ url_for('home') }}">Home</a></p>
+    </div>
+</div>
+{% endblock %}
