@@ -8,8 +8,6 @@ import tempfile
 import zipfile
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
-from threading import Condition
-import threading
 import subprocess
 import argparse
 import copy
@@ -154,7 +152,7 @@ def system_time_is_synced() -> bool:
     except Exception:
         return False
 
-def generate_filename(cam_num: int, file_extension: str = ".jpg") -> str:
+def generate_filename(camera_manager: CameraManager, cam_num: int, file_extension: str = ".jpg") -> str:
     """Generate a timestamped filename for a camera, optionally including camera number."""
     # Normalize file extension
     if not file_extension.startswith("."):
@@ -169,10 +167,11 @@ def generate_filename(cam_num: int, file_extension: str = ".jpg") -> str:
 
     timestamp = ts.strftime("%Y-%m-%d_%H-%M-%S")
 
-    if cam_num == 0:
-        return f"{timestamp}{file_extension}"
-    else:
+    # add camera number to filename, if more than one camera is connected
+    if len(camera_manager.cameras.items()) > 1:
         return f"{timestamp}_cam{cam_num}{file_extension}"
+    else:
+        return f"{timestamp}{file_extension}"
 
 ####################
 # Flask routes - WebUI routes
@@ -450,44 +449,33 @@ def capture_still(camera_num):
             return jsonify(success=False, message="Camera not found"), 404
 
         # Generate new filename
-        timestamp = int(time.time())
-        if len(camera_manager.list_cameras()) == 1:
-            image_filename = f"{timestamp}.jpg"
-        else:
-            image_filename = f"{timestamp}_cam{camera_num}.jpg"
-
+        image_filename = generate_filename(camera_manager, camera_num, ".jpg")
         logging.debug(f"📁 New image filename: {image_filename}")
 
-        image_filepath = os.path.join(app.config['media_upload_folder'], image_filename)
-        image_filepath = camera.capture_still(image_filepath, camera.camera_profile["saveRAW"])
+        success = camera.capture_still(image_filename, camera.camera_profile["saveRAW"])
 
         camera.reconfigure_video_pipeline()
-        camera.start_streaming()
 
-        if image_filepath:
-            return jsonify(success=True, message="Still image captured successfully", image=image_filepath)
+        if success:
+            return jsonify(success=True, message="Still image captured successfully", image=image_filename)
         else:
-            return jsonify(success=False, message="Failed to capture still image", image=image_filepath)
+            return jsonify(success=False, message="Failed to capture still image", image=image_filename)
 
     except Exception as e:
         logging.error(f"🔥 Error capturing still image: {e}")
-        camera.picam2.stop()
-        time.sleep(0.5)
         camera.reconfigure_video_pipeline()
-        camera.start_streaming()
         return jsonify(success=False, message=str(e)), 500
 
 @app.route('/snapshot_<int:camera_num>')
 def snapshot(camera_num):
-    """Take a snapshot from the camera feed and send it as JPEG."""
+    """Take a snapshot from the camera feed and send it as JPG."""
     camera = camera_manager.get_camera(camera_num)
     if camera:
-        image_filename = f"snapshot_{camera_num}.jpg"
-        image_filepath = os.path.join(app.config['media_upload_folder'], image_filename)
-
-        filepath = camera.capture_still_from_feed(image_filepath)
+        image_filename = f"snapshot_{generate_filename(camera_manager, camera_num, ".jpg")}"
+        image_filepath = os.path.join(camera_manager.media_upload_folder, image_filename)
+        success = camera.capture_still_from_feed(image_filepath)
         
-        if image_filepath:
+        if success:
             time.sleep(1)  # Ensure the image is saved
             return send_file(
                 image_filepath,
@@ -525,13 +513,12 @@ def start_recording(camera_num):
     if not camera:
         return jsonify(success=False, error="Invalid camera number"), 400
 
-    timestamp = int(time.time())
-    filename_recording = f"{timestamp}_cam_{camera_num}.mp4"
-    logging.debug(f"📁 New video filename: {filename_recording}")
+    recording_filename = generate_filename(camera_manager, camera_num, ".mp4")
+    logging.debug(f"📁 New video filename: {recording_filename}")
 
-    success = camera.start_recording(filename_recording)
+    success = camera.start_recording(recording_filename)
     message = (
-        f"Recording of file {filename_recording} started successfully"
+        f"Recording of file {recording_filename} started successfully"
         if success else "Failed to start recording"
     )
     return jsonify(success=success, message=message)
@@ -720,8 +707,14 @@ def get_media_slice():
     limit = request.args.get('limit', 20, type=int)
     media_type = request.args.get('type', 'all')
 
+    active_recordings = []
+
+    for key, camera in camera_manager.cameras.items():
+        if camera.active_recording:
+            active_recordings.append(camera.filename_recording)
+
     media_files = media_gallery_manager.get_media_slice(
-        offset=offset, limit=limit, type=media_type
+        offset=offset, limit=limit, type=media_type, excluded_files=active_recordings
     )
 
     return jsonify({'media_files': media_files})

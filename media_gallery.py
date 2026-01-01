@@ -47,13 +47,15 @@ class MediaGallery:
             logger.warning(f"Could not read video resolution for {path}: {e}")
             return None, None
 
-    def get_media_files(self, type: str = "all") -> List[Dict[str, Any]]:
+    def get_media_files(self, type: str = "all", excluded_files: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         try:
             files = os.listdir(self.upload_folder)
             media: List[Dict[str, Any]] = []
 
             for f in files:
                 ext = os.path.splitext(f)[1].lower()
+                if f in excluded_files:
+                    continue
                 if type == "all" and ext not in self.image_exts + self.video_exts:
                     continue
                 elif type == "image" and ext not in self.image_exts:
@@ -63,17 +65,9 @@ class MediaGallery:
                 elif type not in ["all", "image", "video"]:
                     continue
 
-                # Extract timestamp from filename
-                try:
-                    unix_ts = int(f.split('_')[-1].split('.')[0])
-                    timestamp = datetime.utcfromtimestamp(unix_ts).strftime('%Y-%m-%d %H:%M:%S')
-                except Exception:
-                    continue
-
                 path = os.path.join(self.upload_folder, f)
                 item: Dict[str, Any] = {
                     "filename": f,
-                    "timestamp": timestamp,
                     "type": "video" if ext in self.video_exts else "image",
                     "width": None,
                     "height": None,
@@ -91,16 +85,16 @@ class MediaGallery:
 
                 media.append(item)
 
-            media.sort(key=lambda x: x["timestamp"], reverse=True)
+            media.sort(key=lambda x: x["filename"], reverse=True)
             return media
 
         except Exception as e:
             logger.error(f"Media loading error: {e}")
             return []
 
-    def get_media_slice(self, offset: int = 0, limit: int = 20, type: str = "all") -> List[Dict[str, Any]]:
+    def get_media_slice(self, offset: int = 0, limit: int = 20, type: str = "all", excluded_files: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Return a slice of media for infinite scroll."""
-        all_media = self.get_media_files(type=type)
+        all_media = self.get_media_files(type=type, excluded_files=excluded_files)
         return all_media[offset:offset + limit]
 
     def find_last_image_taken(self) -> Optional[str]:

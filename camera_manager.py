@@ -25,6 +25,8 @@ class CameraManager:
         :param camera_module_info_path: Path to camera-module-info.json
         :param last_config_path: Path to camera-last-config.json
         :param media_upload_folder: Path to the folder where photos and videos are stored (media gallery)
+        :camera_controls_db_path: Path to file storing camera controls parameter, controllable via webui
+        :camera_profile_folder: Path to folder storing files of saved camera profiles (.json)
         """
 
         try:
@@ -46,26 +48,6 @@ class CameraManager:
         self.connected_cameras: List[dict] = []
         self.cameras: Dict[int, CameraObject] = {}
         self.lock = threading.Lock()
-
-    def init_cameras(self):
-        """Create CameraObject instances for all connected cameras."""
-        self._load_last_config()
-        self._detect_connected_cameras()
-        self._sync_last_config()
-
-        for cam_info in self.connected_cameras:
-            camera_obj = CameraObject(
-                cam_info,
-                self.camera_module_info,
-                self.media_upload_folder,
-                self.last_config_path,
-                self.camera_controls_db_path,
-                self.camera_profile_folder,
-            )
-            self.cameras[cam_info["Num"]] = camera_obj
-
-        for key, camera in self.cameras.items():
-            logger.info("Initialized camera %s: %s", key, camera.camera_info)
 
     def _load_last_config(self):
         """Load the last configuration file or create an empty template."""
@@ -158,6 +140,26 @@ class CameraManager:
 
         self.connected_cameras = updated_cameras
         return updated_cameras
+
+    def init_cameras(self):
+        """Create CameraObject instances for all connected cameras."""
+        self._load_last_config()
+        self._detect_connected_cameras()
+        self._sync_last_config()
+
+        for cam_info in self.connected_cameras:
+            camera_obj = CameraObject(
+                cam_info,
+                self.camera_module_info,
+                self.media_upload_folder,
+                self.last_config_path,
+                self.camera_controls_db_path,
+                self.camera_profile_folder,
+            )
+            self.cameras[cam_info["Num"]] = camera_obj
+
+        for key, camera in self.cameras.items():
+            logger.info("Initialized camera %s: %s", key, camera.camera_info)
 
     def get_camera(self, cam_num: int) -> Optional[CameraObject]:
         """

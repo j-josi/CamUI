@@ -953,14 +953,17 @@ class CameraObject:
     # Camera Capture Functions
     #-----
 
-    def capture_still(self, filepath: str, raw: bool = False) -> Optional[str]:
+    def capture_still(self, filename: str, raw: bool = False) -> Optional[str]:
         with self.lock:
             if self.active_capture_still:
                 logger.warning(
                     "Skip capturing still image '%s', another capture is active", filepath
                 )
-                return None
+                return False
             self.active_capture_still = True
+
+        was_streaming = self.active_stream
+        filepath = os.path.join(self.upload_folder, filename)
 
         still_index = self.camera_profile["resolutions"]["StillCaptureResolution"]
         still_resolution = self.camera_resolutions[still_index]
@@ -1011,17 +1014,19 @@ class CameraObject:
                         filepath,
                     )
             finally:
+                self.active_stream = was_streaming
                 self.active_capture_still = False
 
         logger.info("Successfully captured image '%s'", filepath)
-        return filepath
+        return True
 
-    def capture_still_from_feed(self, filepath: str) -> Optional[str]:
+    def capture_still_from_feed(self, filename: str) -> Optional[str]:
         try:
+            filepath = os.path.join(self.upload_folder, filename)
             request = self.picam2.capture_request()
             request.save("main", f"{filepath}")
             logger.info("Image captured successfully. Path: %s", filepath)
-            return f"{filepath}.jpg"
+            return True
         except Exception as e:
             logger.error("Error capturing image '%s': %s", filepath, e, exc_info=True)
-            return None
+            return False
