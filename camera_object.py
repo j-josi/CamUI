@@ -31,10 +31,12 @@ ENCODER_MAX = (1920, 1080)
 ####################
 
 class CameraObject:
-    def __init__(self, camera, camera_module_info, upload_folder):
+    def __init__(self, camera, camera_module_info, upload_folder, last_config_path, camera_control_db_path):
         self.camera_info = camera
         self.camera_module_info = camera_module_info
         self.upload_folder = upload_folder
+        self.last_config_path = last_config_path
+        self.camera_control_db_path = camera_control_db_path
         self.lock = threading.Lock()
         self.camera_num = self.camera_info['Num']
         # Generate default Camera profile
@@ -69,7 +71,7 @@ class CameraObject:
         # Initialize configs as empty dictionaries for the still and video configs
         self.init_configure_camera()
         # Compare camera controls DB flushing out settings not avaialbe from picamera2
-        self.live_controls = self.initialize_controls_template(self.get_ui_controls())
+        self.live_controls = self.initialize_controls_template(self.get_ui_controls(), self.camera_control_db_path)
 
         # Set capture flag and set placeholder image
         self.active_capture_still = False
@@ -80,11 +82,8 @@ class CameraObject:
         self.main_stream = "recording"
         self.lores_stream = "streaming"
 
-        # Load saved/active camera profile if one exists and sync meta data
+        # Load and apply saved/active camera profile if one exists and sync meta data
         self.load_saved_camera_profile()
-
-        # Initalize video configuration (based on loaded profile)
-        self.reconfigure_video_pipeline()
 
         # Start streaming
         self.start_streaming()
@@ -123,6 +122,7 @@ class CameraObject:
 
     def load_saved_camera_profile(self):
         """Load the saved camera config if available."""
+        print("DEBUG: load_saved_camera_profile")
         if self.camera_info.get("Has_Config") and self.camera_info.get("Config_Location"):
             self.load_camera_profile(self.camera_info["Config_Location"])
 
@@ -138,22 +138,21 @@ class CameraObject:
             # Load the profile before applying any settings
             self.camera_profile = profile_data
             # Apply settings after loading the profile
-            self.update_settings('recording_resolution', self.camera_profile['resolutions']['recording_resolution'])
-            self.update_settings('streaming_resolution', self.camera_profile['resolutions']['streaming_resolution'])
-            self.update_settings('StillCaptureResolution', self.camera_profile['resolutions']['StillCaptureResolution'])
-            self.set_orientation()
-            self.update_settings('hflip', self.camera_profile['hflip'])
-            self.update_settings('vflip', self.camera_profile['vflip'])
-            self.update_settings('saveRAW', self.camera_profile['saveRAW'])
+            self.update_settings('recording_resolution', self.camera_profile['resolutions']['recording_resolution'], True)
+            self.update_settings('streaming_resolution', self.camera_profile['resolutions']['streaming_resolution'], True)
+            self.update_settings('StillCaptureResolution', self.camera_profile['resolutions']['StillCaptureResolution'], True)
+            self.update_settings('hflip', self.camera_profile['hflip'], True)
+            self.update_settings('vflip', self.camera_profile['vflip'], True)
+            self.update_settings('saveRAW', self.camera_profile['saveRAW'], True)
 
+            self.reconfigure_video_pipeline()
             self.apply_profile_controls()
             self.sync_live_controls()  # Ensure UI updates with the latest settings
 
-
             # Update camera-last-config.json
             try:
-                if os.path.exists(last_config_file_path):
-                    with open(last_config_file_path, "r") as f:
+                if os.path.exists(self.last_config_path):
+                    with open(self.last_config_path, "r") as f:
                         last_config = json.load(f)
                 else:
                     last_config = {"cameras": []}
@@ -167,11 +166,13 @@ class CameraObject:
                         break
                 if not updated:
                     print(f"Camera {self.camera_num} not found in camera-last-config.json.")
-                with open(last_config_file_path, "w") as f:
+                with open(self.last_config_path, "w") as f:
                     json.dump(last_config, f, indent=4)
                 print(f"Loaded profile '{profile_filename}' and updated camera-last-config.json.")
             except Exception as e:
                 print(f"Error updating camera-last-config.json: {e}")
+            
+            print(f"Sucessfully loaded profile {profile_path}")
             return True
         except Exception as e:
             print(f"Error loading camera profile '{profile_filename}': {e}")
@@ -200,15 +201,23 @@ class CameraObject:
                 self.camera_profile = json.load(file)
         return self.camera_profile
     
-    def initialize_controls_template(self, picamera2_controls):
-        with open(os.path.join(current_dir, "camera_controls_db.json"), "r") as f:
-            camera_json = json.load(f)
-        if "sections" not in camera_json:
-            print("Error: 'sections' key not found in camera_json!")
-            return camera_json  # Return unchanged if it's not structured as expected
+    def initialize_controls_template(self, picamera2_controls, camera_control_db_path):
+        if os.path.isfile(camera_control_db_path):
+            try:
+                with open(camera_control_db_path, "r") as f:
+                    cam_ctrl_json = json.load(f)
+            except Exception as e:
+                print(f"Error: Failed to extract json data from '{camera_control_db_path}': {e}")
+                return {}
+            if "sections" not in cam_ctrl_json:
+                print("Error: 'sections' key not found in cam_ctrl_json!")
+                return {cam_ctrl_json}  # Return unchanged if it's not structured as expected
+        else:
+            print(f"Error: file {camera_control_db_path} doesn't exist")
+            return {}
         # Initialize empty controls in camera_profile
         self.camera_profile["controls"] = {}
-        for section in camera_json["sections"]:
+        for section in cam_ctrl_json["sections"]:
             if "settings" not in section:
                 print(f"Warning: Missing 'settings' key in section: {section.get('title', 'Unknown')}")
                 continue        
@@ -278,18 +287,15 @@ class CameraObject:
                             print(f"Skipping or Disabling Child Setting {child_id}: Not found or no source specified")
             section["enabled"] = section_enabled
         print(f"Initialized camera_profile controls: {self.camera_profile}")
-        return camera_json
+        return cam_ctrl_json
 
-    def update_settings(self, setting_id, setting_value):
+    def update_settings(self, setting_id, setting_value, init=False):
         # Handle hflip and vflip separately
         if setting_id in ["hflip", "vflip"]:
             try:
                 self.camera_profile[setting_id] = bool(int(setting_value))
-                self.stop_recording()
-                self.stop_streaming()
-                self.picam2.stop()
-                self.set_orientation()
-                self.start_streaming()
+                if not init:
+                    self.reconfigure_video_pipeline()
 
                 print(f"Applied transform: {setting_id} -> {setting_value} (Camera restarted)")
             except ValueError as e:
@@ -306,11 +312,15 @@ class CameraObject:
             self.set_recording_resolution(int(setting_value))
             self.camera_profile['resolutions'][setting_id] = int(setting_value)
             print(f"Applied recording_resolution index {setting_value} -> {self.video_resolutions[int(setting_value)]}")
+            if not init:
+                self.reconfigure_video_pipeline()
 
         elif setting_id == "streaming_resolution":
             self.set_streaming_resolution(int(setting_value))
             self.camera_profile['resolutions'][setting_id] = int(setting_value)
             print(f"Applied streaming_resolution index {setting_value} -> {self.video_resolutions[int(setting_value)]}")
+            if not init:
+                self.reconfigure_video_pipeline()
 
         elif setting_id == "saveRAW":
             try:
@@ -373,17 +383,6 @@ class CameraObject:
             except Exception as e:
                 print(f"[ERROR] applying profile controls: {e}")
 
-    def set_orientation(self):
-        # Get current transform settings
-        transform = Transform()
-        # Apply hflip and vflip from camera_profile
-        transform.hflip = self.camera_profile.get("hflip", False)
-        transform.vflip = self.camera_profile.get("vflip", False)
-        # Update both video and still configs
-        self.still_config['transform'] = transform
-        self.video_config['transform'] = transform
-        print("Applied Orientation - hflip:", transform.hflip, "vflip:", transform.vflip)
-    
     def generate_video_resolutions(self):
         resolutions = set()
 
@@ -419,6 +418,9 @@ class CameraObject:
         return min(candidates, key=lambda m: m["size"][0] * m["size"][1])
 
     def reconfigure_video_pipeline(self):
+        if self.active_capture_still or self.active_recording:
+            print("Failed to reconfigure video pipeline since there is an active still capture or recording")
+            return False
         rec_index = self.camera_profile["resolutions"]["recording_resolution"]
         stream_index = self.camera_profile["resolutions"]["streaming_resolution"]
 
@@ -447,9 +449,14 @@ class CameraObject:
         with self.lock:
             self.picam2.stop()
 
+            transform = Transform()
+            transform.hflip = bool(self.camera_profile.get("hflip", False))
+            transform.vflip = bool(self.camera_profile.get("vflip", False))
+
             self.video_config = self.picam2.create_video_configuration(
                 main={"size": main_size},
                 lores={"size": lores_size},
+                transform=transform,
                 sensor={
                     "output_size": mode["size"],
                     "bit_depth": mode["bit_depth"]
@@ -468,6 +475,8 @@ class CameraObject:
         print("✅ Video pipeline reconfigured")
         print(f"   main:  {main_size} ({self.main_stream})")
         print(f"   lores: {lores_size} ({self.lores_stream})")
+
+        return True
 
     def get_recording_stream(self):
         return "main" if self.main_stream == "recording" else "lores"
@@ -507,8 +516,8 @@ class CameraObject:
                 json.dump(self.camera_profile, f, indent=4)
             # ✅ Update camera-last-config.json
             try:
-                if os.path.exists(last_config_file_path):
-                    with open(last_config_file_path, "r") as f:
+                if os.path.exists(self.last_config_path):
+                    with open(self.last_config_path, "r") as f:
                         last_config = json.load(f)
                 else:
                     last_config = {"cameras": []}  # Create an empty structure if missing
@@ -523,7 +532,7 @@ class CameraObject:
                 if not updated:
                     print(f"Warning: Camera {self.camera_num} not found in camera-last-config.json.")
                 # Save the updated configuration back
-                with open(last_config_file_path, "w") as f:
+                with open(self.last_config_path, "w") as f:
                     json.dump(last_config, f, indent=4)
                 print(f"Updated camera-last-config.json for camera {self.camera_num} after saving profile.")
             except Exception as e:
@@ -571,12 +580,12 @@ class CameraObject:
 
         # Apply video resolutions and orientation
         self.reconfigure_video_pipeline()
-        self.set_orientation()
         # Reinitialize UI settings
         self.update_settings("saveRAW", self.camera_profile["saveRAW"])
         # Apply camera controls
         self.apply_profile_controls()
         print("Camera profile reset to default and settings applied.")
+        return True
 
     #-----
     # Camera Information Functions

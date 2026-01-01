@@ -11,8 +11,6 @@ import copy
 from flask import Flask, render_template, request, jsonify, Response, send_file, abort, session, redirect, url_for
 import secrets
 
-# picamera2 imports
-from picamera2 import Picamera2
 from libcamera import Transform, controls
 
 # Image handeling imports
@@ -35,9 +33,7 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 ####################
 
 # Set debug level to Warning
-Picamera2.set_logging(Picamera2.DEBUG)
-# Ask picamera2 for what cameras are connected
-global_cameras = Picamera2.global_camera_info()
+# Picamera2.set_logging(Picamera2.DEBUG)
 
 ##### Uncomment the line below if you want to limt the number of cameras connected (change the number to index which camera you want)
 # global_cameras = [global_cameras[0]]
@@ -45,7 +41,7 @@ global_cameras = Picamera2.global_camera_info()
 ##### Uncomment the line below simulate having no cameras connected
 # global_cameras = []
 
-print(f'\nInitialize picamera2 - Cameras Found:\n{global_cameras}\n')
+# print(f'\nInitialize picamera2 - Cameras Found:\n{global_cameras}\n')
 
 ####################
 # Initialize default values 
@@ -61,6 +57,11 @@ mediamtx_webrtc_port = 8889
 # Get the directory of the current script
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
+# Set path for files storing the last/active camera configuration and camera modules information
+last_config_path = os.path.join(current_dir, 'camera-last-config.json')
+camera_module_info_path = os.path.join(current_dir, 'camera-module-info.json')
+camera_control_db_path = os.path.join(current_dir, 'camera_controls_db.json')
+
 # Set the path where the camera profiles are stored
 camera_profile_folder = os.path.join(current_dir, 'static/camera_profiles')
 app.config['camera_profile_folder'] = camera_profile_folder
@@ -68,10 +69,10 @@ app.config['camera_profile_folder'] = camera_profile_folder
 os.makedirs(app.config['camera_profile_folder'], exist_ok=True)
 
 # Set the path where the images and videos will be stored for the media gallery
-upload_folder = os.path.join(current_dir, 'static/gallery')
-app.config['upload_folder'] = upload_folder
+media_upload_folder = os.path.join(current_dir, 'static/gallery')
+app.config['media_upload_folder'] = media_upload_folder
 # Create the folder if it does not exist
-os.makedirs(app.config['upload_folder'], exist_ok=True)
+os.makedirs(app.config['media_upload_folder'], exist_ok=True)
 
 # For the media gallery set items per page
 # items_per_page = 12
@@ -85,35 +86,28 @@ minimum_last_config = {
 DEFAULT_EPOCH = datetime(1970, 1, 1)
 _MONOTONIC_START = time.monotonic()
 
-# Load the camera-module-info.json file
-last_config_file_path = os.path.join(current_dir, 'camera-last-config.json')
-
-with open(os.path.join(current_dir, 'camera-module-info.json'), 'r') as file:
-    camera_module_info = json.load(file)
-
-
 ####################
-# Cycle through Cameras to create connected camera config
+# Initialize CameraManager
 ####################
-
-global_cameras = Picamera2.global_camera_info()
 
 camera_manager = CameraManager(
-    global_cameras=global_cameras,
-    camera_module_info=camera_module_info,
-    config_path=os.path.join(current_dir, "camera-last-config.json"),
-    upload_folder=upload_folder
+    camera_module_info_path=camera_module_info_path,
+    last_config_path=last_config_path,
+    media_upload_folder=media_upload_folder,
+    camera_control_db_path=camera_control_db_path
 )
 
-camera_manager.detect_connected_cameras()
-camera_manager.sync_last_config()
 camera_manager.init_cameras()
+
+# camera_manager.detect_connected_cameras()
+# camera_manager.sync_last_config()
+# camera_manager.init_connected_cameras()
 
 
 ####################
 # Initialize Media Gallery 
 ####################
-media_gallery_manager = MediaGallery(upload_folder)
+media_gallery_manager = MediaGallery(media_upload_folder)
 
 # Function to load or initialize configuration
 def load_or_initialize_config(file_path, default_config):
@@ -136,7 +130,7 @@ def load_or_initialize_config(file_path, default_config):
     return config
 
 def get_active_profile():
-    return load_or_initialize_config(last_config_file_path, minimum_last_config)
+    return load_or_initialize_config(last_config_path, minimum_last_config)
 
 def get_profiles():
     profiles = []
@@ -158,16 +152,16 @@ def get_profiles():
                 print(f"Error loading {f}: {e}")
     return profiles
 
-def control_template():
-    with open(os.path.join(current_dir, "camera_controls_db.json"), "r") as f:
-        settings = json.load(f)
-    return settings
+# def control_template():
+#     with open(os.path.join(current_dir, "camera_controls_db.json"), "r") as f:
+#         settings = json.load(f)
+#     return settings
 
-def get_camera_info(camera_model, camera_module_info):
-    return next(
-        (module for module in camera_module_info["camera_modules"] if module["sensor_model"] == camera_model),
-        next(module for module in camera_module_info["camera_modules"] if module["sensor_model"] == "Unknown")
-    )
+# def get_camera_info(camera_model, camera_module_info):
+#     return next(
+#         (module for module in camera_module_info["camera_modules"] if module["sensor_model"] == camera_model),
+#         next(module for module in camera_module_info["camera_modules"] if module["sensor_model"] == "Unknown")
+#     )
 
 def system_time_is_synced() -> bool:
     """Check if system time of raspberrypi is synced with NTP server"""
@@ -312,8 +306,8 @@ def about():
 @app.route('/system_settings')
 def system_settings():
     # Load camera module info
-    print(camera_module_info)
-    return render_template('system_settings.html', firmware_control=firmware_control, camera_modules=camera_module_info.get("camera_modules", []))
+    print(camera_manager.camera_module_info)
+    return render_template('system_settings.html', firmware_control=firmware_control, camera_modules=camera_manager.camera_module_info.get("camera_modules", []))
 
 @app.route('/set_camera_config', methods=['POST'])
 def set_camera_config():
@@ -509,7 +503,7 @@ def capture_still(camera_num):
 
         logging.debug(f"📁 New image filename: {image_filename}")
 
-        image_filepath = os.path.join(app.config['upload_folder'], image_filename)
+        image_filepath = os.path.join(app.config['media_upload_folder'], image_filename)
         image_filepath = camera.capture_still(image_filepath, camera.camera_profile["saveRAW"])
 
         camera.reconfigure_video_pipeline()
@@ -534,7 +528,7 @@ def snapshot(camera_num):
     camera = camera_manager.get_camera(camera_num)
     if camera:
         image_filename = f"snapshot_{camera_num}.jpg"
-        image_filepath = os.path.join(app.config['upload_folder'], filename)
+        image_filepath = os.path.join(app.config['media_upload_folder'], filename)
 
         filepath = camera.capture_still_from_feed(image_filepath)
         
@@ -663,8 +657,11 @@ def set_streaming_resolution():
 def get_camera_profile():
     camera_num = request.args.get("camera_num", type=int)
     camera = camera_manager.get_camera(camera_num)
-    camera_profile = camera.camera_profile  # Fetch current controls
-    return jsonify(success=True, camera_profile=camera_profile)
+    if camera:
+        camera_profile = camera.camera_profile  # Fetch current controls
+        return jsonify(success=True, camera_profile=camera_profile)
+    else:
+        return jsonify(success=False, camera_profile="")
 
 @app.route('/create_profile_<int:camera_num>', methods=['POST'])
 def create_profile(camera_num):
@@ -683,12 +680,11 @@ def create_profile(camera_num):
 
 @app.route("/reset_profile_<int:camera_num>", methods=["POST"])
 def reset_profile(camera_num):
-    if camera_num not in cameras:
-        return jsonify({"success": False, "message": "Camera not found"}), 404
-
-    camera = cameras[camera_num]
-    camera.reset_to_default()
-    return jsonify({"success": True, "message": "Profile reset to default"})
+    camera = camera_manager.get_camera(camera_num)
+    if camera and camera.reset_to_default():
+        return jsonify({"success": True, "message": "Profile reset to default values"})
+    else:
+        return jsonify({"success": False, "message": "Failed to reset profile to default values"}), 404
 
 @app.route("/delete_profile_<int:camera_num>", methods=["POST"])
 def delete_profile(camera_num):
@@ -710,9 +706,11 @@ def delete_profile(camera_num):
 
 @app.route("/fetch_metadata_<int:camera_num>")
 def fetch_metadata(camera_num):
-    if camera_num not in cameras:
+    camera = camera_manager.get_camera(camera_num)
+
+    if not camera:
         return jsonify({"error": "Invalid camera number"}), 400
-    camera = cameras[camera_num]
+
     metadata = camera.capture_metadata()  # Get metadata for the selected camera
     print(f"Camera {camera_num} Metadata: {metadata}")  # Log metadata
     return jsonify(metadata)  # Return as JSON
@@ -728,8 +726,9 @@ def load_profile():
     if camera_num is None:
         return jsonify({"error": "Camera number is missing"}), 400
 
-    if camera_num in cameras:
-        success = cameras[camera_num].load_camera_profile(profile_name)
+    camera = camera_manager.get_camera(camera_num)
+    if camera:
+        success = camera.load_camera_profile(profile_name)
         if success:
             return jsonify({"message": f"Profile '{profile_name}' loaded successfully"})
         else:
@@ -810,7 +809,7 @@ def apply_filters():
         rotation = float(request.form.get("rotation", 0))
 
         # Vollständigen Pfad der Datei
-        img_path = os.path.join(app.config['upload_folder'], filename)
+        img_path = os.path.join(app.config['media_upload_folder'], filename)
 
         # Filter anwenden
         edited_filepath = media_gallery.apply_filter(
@@ -823,7 +822,7 @@ def apply_filters():
         if edited_filepath:
             # Datei zurückgeben
             edited_filename = os.path.basename(edited_filepath)
-            return send_from_directory(app.config['upload_folder'], edited_filename)
+            return send_from_directory(app.config['media_upload_folder'], edited_filename)
         else:
             return jsonify(success=False, message="Failed to apply filters"), 500
 
@@ -833,7 +832,7 @@ def apply_filters():
 @app.route('/download_image/<filename>', methods=['GET'])
 def download_image(filename):
     try:
-        image_path = os.path.join(app.config['upload_folder'], filename)
+        image_path = os.path.join(app.config['media_upload_folder'], filename)
         return send_file(image_path, as_attachment=True)
     except Exception as e:
         print(f"\nError downloading image:\n{e}\n")
@@ -847,7 +846,7 @@ def download_media_bulk():
 
     with zipfile.ZipFile(memory_file, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in files:
-            path = os.path.join(app.config["upload_folder"], f)
+            path = os.path.join(app.config["media_upload_folder"], f)
             if os.path.exists(path):
                 zf.write(path, arcname=f)
 
