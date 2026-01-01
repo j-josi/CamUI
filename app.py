@@ -196,39 +196,6 @@ def generate_filename(cam_num: int, file_extension: str = ".jpg") -> str:
         return f"{timestamp}_cam{cam_num}{file_extension}"
 
 ####################
-# GPIO Class
-####################
-
-class GPIO:
-    def __init__(self, config_path="gpio_map.json"):
-        self.config_path = config_path
-        self.gpio_pins = self.load_config()
-
-    def load_config(self):
-        try:
-            with open(self.config_path, "r") as f:
-                data = json.load(f)
-                
-                # Ensure we get a list, not an object
-                if not isinstance(data, dict) or "gpio_template" not in data:
-                    raise ValueError("Invalid JSON structure: Missing 'gpio_template' key.")
-
-                gpio_template = data["gpio_template"]
-
-                if not isinstance(gpio_template, list) or not all(isinstance(item, dict) for item in gpio_template):
-                    raise ValueError("GPIO config must be a list of dictionaries.")
-
-                return gpio_template
-
-        except (json.JSONDecodeError, FileNotFoundError, ValueError) as e:
-            print(f"Error loading GPIO config: {e}")
-            return []
-
-    def get_gpio_pins(self):
-        """Return GPIO configuration as a list of dictionaries."""
-        return self.gpio_pins
-
-####################
 # Flask routes - WebUI routes 
 ####################
 
@@ -740,20 +707,6 @@ def load_profile():
 def _get_profiles():
     # return list_profiles()
     return get_profiles()
-
-
-####################
-# Flask routes - GPIO routes 
-####################
-
-# Initialize the gallery with the upload folder
-gpio = GPIO()
-
-@app.route("/gpio_setup")
-def gpio_setup():
-    gpio_pins = gpio.get_gpio_pins()
-    print(gpio_pins)
-    return render_template("gpio_setup.html", gpio_pins = gpio.get_gpio_pins())
 
 ####################
 # Flask routes - Media gallery routes 
