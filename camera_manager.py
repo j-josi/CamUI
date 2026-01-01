@@ -1,108 +1,157 @@
-
 import os
 import json
 import threading
+import logging
 from typing import Dict, List, Optional
 from picamera2 import Picamera2
-from camera_object import CameraObject  # Annahme: CameraObject ist in camera_object.py
+from camera_object import CameraObject
+
+logger = logging.getLogger(__name__)
 
 ####################
 # CameraManager Class
 ####################
 
 class CameraManager:
-    def __init__(self, camera_module_info_path: str, last_config_path: str, media_upload_folder: str, camera_control_db_path: str):
+    def __init__(
+        self,
+        camera_module_info_path: str,
+        last_config_path: str,
+        media_upload_folder: str,
+        camera_controls_db_path: str,
+        camera_profile_folder: str,
+    ):
         """
-        :param camera_module_info_path: Pfad zur Datei camera-module-info.json
-        :param last_config_path: Pfad zur camera-last-config.json
-        :param media_upload_folder: Pfad zum Ordner in welchem die Fotos und Videos-Aufnahmen gesichert werden (media gallery)
+        :param camera_module_info_path: Path to camera-module-info.json
+        :param last_config_path: Path to camera-last-config.json
+        :param media_upload_folder: Path to the folder where photos and videos are stored (media gallery)
         """
 
         try:
-            with open(camera_module_info_path, 'r') as f:
+            with open(camera_module_info_path, "r") as f:
                 self.camera_module_info = json.load(f)
-        except:
+        except Exception as exc:
+            logger.warning(
+                "Failed to load camera module info from '%s': %s",
+                camera_module_info_path,
+                exc,
+            )
             self.camera_module_info = {}
-        
+
         self.last_config_path = last_config_path
         self.media_upload_folder = media_upload_folder
-        self.camera_control_db_path = camera_control_db_path
+        self.camera_controls_db_path = camera_controls_db_path
+        self.camera_profile_folder = camera_profile_folder
 
         self.connected_cameras: List[dict] = []
         self.cameras: Dict[int, CameraObject] = {}
         self.lock = threading.Lock()
 
     def init_cameras(self):
-        """Erstelle CameraObject Instanzen für alle verbundenen Kameras."""
+        """Create CameraObject instances for all connected cameras."""
         self._load_last_config()
         self._detect_connected_cameras()
         self._sync_last_config()
 
         for cam_info in self.connected_cameras:
-            # Übergabe der Kamera-Info und des camera_module_info
-            camera_obj = CameraObject(cam_info, self.camera_module_info, self.media_upload_folder, self.last_config_path, self.camera_control_db_path)
+            camera_obj = CameraObject(
+                cam_info,
+                self.camera_module_info,
+                self.media_upload_folder,
+                self.last_config_path,
+                self.camera_controls_db_path,
+                self.camera_profile_folder,
+            )
             self.cameras[cam_info["Num"]] = camera_obj
 
-        # Debug-Ausgabe
         for key, camera in self.cameras.items():
-            print(f"Key: {key}, Camera: {camera.camera_info}")
+            logger.info("Initialized camera %s: %s", key, camera.camera_info)
 
     def _load_last_config(self):
-        """Lade das letzte Config-File oder erstelle leeres Template."""
+        """Load the last configuration file or create an empty template."""
         if os.path.exists(self.last_config_path):
             with open(self.last_config_path, "r") as f:
                 self.last_config = json.load(f)
+            logger.debug("Loaded last camera configuration from disk.")
         else:
             self.last_config = {"cameras": []}
+            logger.info("No previous camera configuration found. Using empty template.")
 
     def _detect_connected_cameras(self) -> List[dict]:
-        """Erstelle die Liste der aktuell verbundenen Kameras (erkannt durch Picamera2) mit Pi-Cam Kennzeichnung."""
+        """
+        Detect currently connected cameras using Picamera2 and
+        determine whether they are Raspberry Pi cameras.
+        """
         currently_connected = []
+
         for connected_camera in Picamera2.global_camera_info():
             matching_module = next(
-                (module for module in self.camera_module_info.get("camera_modules", [])
-                 if module["sensor_model"] == connected_camera["Model"]),
-                None
+                (
+                    module
+                    for module in self.camera_module_info.get("camera_modules", [])
+                    if module["sensor_model"] == connected_camera["Model"]
+                ),
+                None,
             )
+
             is_pi_cam = bool(matching_module and matching_module.get("is_pi_cam", False))
+
             if is_pi_cam:
-                print(f"Connected camera model '{connected_camera['Model']}' is a Pi Camera.")
+                logger.info(
+                    "Detected Raspberry Pi Camera: model=%s",
+                    connected_camera["Model"],
+                )
             else:
-                print(f"Connected camera model '{connected_camera['Model']}' is NOT a Pi Camera or not listed.")
+                logger.info(
+                    "Detected non-Pi camera or unknown model: model=%s",
+                    connected_camera["Model"],
+                )
 
             camera_info = {
                 "Num": connected_camera["Num"],
                 "Model": connected_camera["Model"],
                 "Is_Pi_Cam": is_pi_cam,
                 "Has_Config": False,
-                "Config_Location": f"default_{connected_camera['Model']}.json"
+                "Config_Location": f"default_{connected_camera['Model']}.json",
             }
+
             currently_connected.append(camera_info)
 
         self.connected_cameras = currently_connected
         return currently_connected
 
     def _sync_last_config(self) -> List[dict]:
-        """Vergleiche aktuelle Kameras mit der letzten Konfiguration und aktualisiere, falls nötig."""
-        existing_lookup = {cam["Num"]: cam for cam in self.last_config.get("cameras", [])}
+        """
+        Compare currently connected cameras with the last configuration
+        and update it if necessary.
+        """
+        existing_lookup = {
+            cam["Num"]: cam for cam in self.last_config.get("cameras", [])
+        }
+
         updated_cameras = []
 
         for cam in self.connected_cameras:
             cam_num = cam["Num"]
+
             if cam_num in existing_lookup:
                 config_cam = existing_lookup[cam_num]
-                # Update wenn sich Model oder Pi-Cam Status geändert hat
-                if config_cam["Model"] != cam["Model"] or config_cam.get("Is_Pi_Cam") != cam.get("Is_Pi_Cam"):
-                    print(f"Updating camera {cam['Model']}: Model or Pi-Cam status changed.")
+
+                if (
+                    config_cam["Model"] != cam["Model"]
+                    or config_cam.get("Is_Pi_Cam") != cam.get("Is_Pi_Cam")
+                ):
+                    logger.info(
+                        "Camera %s changed (model or Pi Camera flag). Updating config.",
+                        cam_num,
+                    )
                     updated_cameras.append(cam)
                 else:
                     updated_cameras.append(config_cam)
             else:
-                # Neue Kamera
-                print(f"New camera added to config: {cam}")
+                logger.info("New camera detected and added to config: %s", cam)
                 updated_cameras.append(cam)
 
-        # Save updated config
         self.last_config = {"cameras": updated_cameras}
         with open(self.last_config_path, "w") as f:
             json.dump(self.last_config, f, indent=4)
@@ -111,23 +160,27 @@ class CameraManager:
         return updated_cameras
 
     def get_camera(self, cam_num: int) -> Optional[CameraObject]:
-        """Hole die CameraObject-Instanz für eine bestimmte Kamera.
-        Gibt None zurück, falls die Abfrage ungültig ist oder die Kamera nicht existiert.
+        """
+        Return the CameraObject instance for the given camera number.
+        Returns None if the request is invalid or the camera does not exist.
         """
         if not isinstance(cam_num, int):
+            logger.warning("Invalid camera number requested: %r", cam_num)
             return None
 
-        camera = self.cameras.get(cam_num)
-        return camera if camera is not None else None
+        return self.cameras.get(cam_num)
 
     def list_cameras(self) -> Optional[List[dict]]:
-        """Liste aller verbundenen Kameras als Dictionaries.
-        Gibt None zurück, falls keine Kameras vorhanden sind oder der Zustand ungültig ist.
+        """
+        Return a list of all connected cameras as dictionaries.
+        Returns None if no cameras are present or the internal state is invalid.
         """
         if not isinstance(self.connected_cameras, list):
+            logger.error("Invalid internal state: connected_cameras is not a list.")
             return None
 
         if not self.connected_cameras:
+            logger.info("No connected cameras detected.")
             return None
 
         return self.connected_cameras

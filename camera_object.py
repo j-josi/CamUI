@@ -1,153 +1,222 @@
-# System level imports
-import os, io, logging, json, time, re, glob, math, tempfile, zipfile
+# =========================
+# System-level imports
+# =========================
+import os
+import io
+import json
+import time
+import re
+import glob
+import math
+import tempfile
+import zipfile
+import copy
+import logging
+import threading
+import subprocess
+import argparse
+
 from typing import Optional, Dict, List
 from datetime import datetime, timedelta
 from threading import Condition
-import threading, subprocess
-import argparse
-import copy
 
-# picamera2 imports
+# =========================
+# Picamera2 imports
+# =========================
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
 from picamera2.encoders import H264Encoder
 from picamera2.outputs import FileOutput, PyavOutput, FfmpegOutput
 from libcamera import Transform, controls
 
-# Image handeling imports
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageOps, ExifTags
+# =========================
+# Image handling imports
+# =========================
+from PIL import (
+    Image,
+    ImageDraw,
+    ImageFont,
+    ImageEnhance,
+    ImageOps,
+    ExifTags,
+)
 
+# =========================
+# Logging
+# =========================
+logger = logging.getLogger(__name__)
 
+# =========================
+# Constants
+# =========================
+H264_ENCODER_MAX_VID_RES = (1920, 1080)
 
-# temp
-current_dir = os.path.dirname(os.path.abspath(__file__))
-camera_profile_folder = os.path.join(current_dir, 'static/camera_profiles')
-# Max. supported resolution of h264 encoder
-ENCODER_MAX = (1920, 1080)
-
-
-####################
-# CameraObject that will store the itteration of 1 or more cameras
-####################
 
 class CameraObject:
-    def __init__(self, camera, camera_module_info, upload_folder, last_config_path, camera_control_db_path):
+    def __init__(
+        self,
+        camera: Dict,
+        camera_module_info: Dict,
+        upload_folder: str,
+        last_config_path: str,
+        controls_db_path: str,
+        profile_folder: str,
+    ) -> None:
         self.camera_info = camera
         self.camera_module_info = camera_module_info
         self.upload_folder = upload_folder
         self.last_config_path = last_config_path
-        self.camera_control_db_path = camera_control_db_path
+        self.controls_db_path = controls_db_path
+        self.profile_folder = profile_folder
+
         self.lock = threading.Lock()
-        self.camera_num = self.camera_info['Num']
-        # Generate default Camera profile
-        self.camera_profile = self.generate_camera_profile()
-        # Init camera to picamera2 using the camera number
-        self.picam2 = Picamera2(self.camera_num)
-        # Get Camera specs
-        self.camera_module_spec = self.get_camera_module_spec()
-        # Fetch Avaialble Sensor modes and generate available resolutions
-        self.sensor_modes = self.picam2.sensor_modes
-        self.camera_resolutions = self.generate_camera_resolutions()
-        # Get all available video resolutions for this camera/sensor
-        self.video_resolutions = self.generate_video_resolutions()
-        # Stream Encoder
-        self.encoder_stream = H264Encoder(bitrate=8_000_000)
-        # TODO function to detect microphone
+        self.camera_num: int = self.camera_info["Num"]
+
+        # Generate default camera profile
+        self.camera_profile: Dict = self.generate_camera_profile()
+
+        # Initialize Picamera2 with camera number
+        self.picam2: Picamera2 = Picamera2(self.camera_num)
+
+        # Camera module specification
+        self.camera_module_spec: Optional[Dict] = self.get_camera_module_spec()
+
+        # Sensor modes and resolutions
+        self.sensor_modes: List[Dict] = self.picam2.sensor_modes
+        self.camera_resolutions: List = self.generate_camera_resolutions()
+        self.video_resolutions: List = self.generate_video_resolutions()
+
+        # Stream encoder
+        self.encoder_stream: H264Encoder = H264Encoder(bitrate=8_000_000)
         self.encoder_stream.audio = False
-        self.encoder_stream.audio_output = {'codec_name': 'libopus'}
+        self.encoder_stream.audio_output = {"codec_name": "libopus"}
         self.encoder_stream.audio_sync = 0
-        # Stream Output (PyavOutput processed by Mediamtx)
-        self.output_stream = PyavOutput(f"rtsp://127.0.0.1:8554/cam{self.camera_num}", format="rtsp")
+
+        # Stream output (processed by MediaMTX)
+        self.output_stream: PyavOutput = PyavOutput(
+            f"rtsp://127.0.0.1:8554/cam{self.camera_num}",
+            format="rtsp",
+        )
+
         # Stream activity flag
-        self.active_stream = False
-        # Recording Encoder
-        self.encoder_recording = H264Encoder(bitrate=8_000_000)
-        # self.resolution_recording = self.video_resolutions[0]
-        # Recording Output
+        self.active_stream: bool = False
+
+        # Recording encoder
+        self.encoder_recording: H264Encoder = H264Encoder(bitrate=8_000_000)
         self.output_recording = None
-        self.filename_recording = None
-        # Recording activity flag
-        self.active_recording = False
-        # Initialize configs as empty dictionaries for the still and video configs
+        self.filename_recording: Optional[str] = None
+        self.active_recording: bool = False
+
+        # Initialize camera configurations
         self.init_configure_camera()
-        # Compare camera controls DB flushing out settings not avaialbe from picamera2
-        self.live_controls = self.initialize_controls_template(self.get_ui_controls(), self.camera_control_db_path)
 
-        # Set capture flag and set placeholder image
-        self.active_capture_still = False
-        # self.placeholder_frame = self.generate_placeholder_frame()  # Create placeholder
-        # Audio
-        # TODO function to detect microphone
-        self.audio = False
-        self.main_stream = "recording"
-        self.lores_stream = "streaming"
+        # Initialize and sanitize control definitions
+        self.live_controls: Dict = self.initialize_controls_template(
+            self.get_ui_controls(),
+            self.controls_db_path,
+        )
 
-        # Load and apply saved/active camera profile if one exists and sync meta data
+        # Capture flags
+        self.active_capture_still: bool = False
+
+        # Audio (placeholder for future support)
+        self.audio: bool = False
+
+        self.main_stream: str = "recording"
+        self.lores_stream: str = "streaming"
+
+        # Load saved camera profile if available
         self.load_saved_camera_profile()
 
         # Start streaming
         self.start_streaming()
 
-        # Final debug statements
-        print(f"Available Camera Controls: {self.get_ui_controls()}")
-        print(f"Available Sensor Modes: {self.sensor_modes}")
-        print(f"Available Resolutions: {self.camera_resolutions}")
-        print(f"Final Camera Profile: {self.camera_profile}")
+        # Debug information
+        logger.debug("Available Camera Controls: %s", self.get_ui_controls())
+        logger.debug("Available Sensor Modes: %s", self.sensor_modes)
+        logger.debug("Available Resolutions: %s", self.camera_resolutions)
+        logger.info("Final Camera Profile: %s", self.camera_profile)
 
-    #-----
-    # Camera Config Functions
-    #-----
+    # ------------------------------------------------------------------
+    # Camera configuration functions
+    # ------------------------------------------------------------------
 
-    def get_ui_controls(self):
-        # copy camera controls from picamera2.camera_controls (which inherits the values from libcamera driver) and set/crop to custom/reasonable ranges used by ui slider/controls
-        ui_controls = copy.deepcopy(self.picam2.camera_controls)
+    def get_ui_controls(self) -> Dict:
+        """
+        Copy camera controls from picamera2.camera_controls (inherited from
+        libcamera) and crop them to reasonable UI ranges.
+        """
+        ui_controls: Dict = copy.deepcopy(self.picam2.camera_controls)
 
         if "ExposureTime" in ui_controls:
-            min_exposure_time = 100 # microseconds
-            max_exposure_time = 100000 # microseconds
+            min_exposure_time = 100        # microseconds
+            max_exposure_time = 100_000    # microseconds
             default_exposure_time = 500
-            ui_controls["ExposureTime"] = (min_exposure_time, max_exposure_time, default_exposure_time)
+            ui_controls["ExposureTime"] = (
+                min_exposure_time,
+                max_exposure_time,
+                default_exposure_time,
+            )
+
         if "ColourTemperature" in ui_controls:
-            min_color_temp = 100 # Kelvin
-            max_color_temp = 10000 # Kelvin
+            min_color_temp = 100           # Kelvin
+            max_color_temp = 10_000        # Kelvin
             default_color_temp = None
-            ui_controls["ColourTemperature"] = (min_color_temp, max_color_temp, default_color_temp)
+            ui_controls["ColourTemperature"] = (
+                min_color_temp,
+                max_color_temp,
+                default_color_temp,
+            )
+
         return ui_controls
 
-    def init_configure_camera(self):
-        self.still_config = {}
-        self.video_config = {}
-        self.still_config = self.picam2.create_still_configuration()
-        self.video_config = self.picam2.create_video_configuration()
+    def init_configure_camera(self) -> None:
+        self.still_config: Dict = self.picam2.create_still_configuration()
+        self.video_config: Dict = self.picam2.create_video_configuration()
 
-    def load_saved_camera_profile(self):
-        """Load the saved camera config if available."""
-        print("DEBUG: load_saved_camera_profile")
+    def load_saved_camera_profile(self) -> None:
+        """Load the saved camera profile if available."""
+        logger.debug("load_saved_camera_profile")
+
         if self.camera_info.get("Has_Config") and self.camera_info.get("Config_Location"):
             self.load_camera_profile(self.camera_info["Config_Location"])
 
-    def load_camera_profile(self, profile_filename):
-        """Load and apply a camera profile from a given filename."""
-        profile_path = os.path.join(camera_profile_folder, profile_filename)
+    def load_camera_profile(self, profile_filename: str) -> bool:
+        """Load and apply a camera profile from a file."""
+        profile_path = os.path.join(self.profile_folder, profile_filename)
+
         if not os.path.exists(profile_path):
-            print(f"Profile file not found: {profile_path}")
+            logger.warning("Profile file not found: %s", profile_path)
             return False
+
         try:
             with open(profile_path, "r") as f:
                 profile_data = json.load(f)
-            # Load the profile before applying any settings
+
             self.camera_profile = profile_data
-            # Apply settings after loading the profile
-            self.update_settings('recording_resolution', self.camera_profile['resolutions']['recording_resolution'], True)
-            self.update_settings('streaming_resolution', self.camera_profile['resolutions']['streaming_resolution'], True)
-            self.update_settings('StillCaptureResolution', self.camera_profile['resolutions']['StillCaptureResolution'], True)
-            self.update_settings('hflip', self.camera_profile['hflip'], True)
-            self.update_settings('vflip', self.camera_profile['vflip'], True)
-            self.update_settings('saveRAW', self.camera_profile['saveRAW'], True)
+
+            self.update_settings(
+                "recording_resolution",
+                self.camera_profile["resolutions"]["recording_resolution"],
+                True,
+            )
+            self.update_settings(
+                "streaming_resolution",
+                self.camera_profile["resolutions"]["streaming_resolution"],
+                True,
+            )
+            self.update_settings(
+                "StillCaptureResolution",
+                self.camera_profile["resolutions"]["StillCaptureResolution"],
+                True,
+            )
+            self.update_settings("hflip", self.camera_profile["hflip"], True)
+            self.update_settings("vflip", self.camera_profile["vflip"], True)
+            self.update_settings("saveRAW", self.camera_profile["saveRAW"], True)
 
             self.reconfigure_video_pipeline()
             self.apply_profile_controls()
-            self.sync_live_controls()  # Ensure UI updates with the latest settings
+            self.sync_live_controls()
 
             # Update camera-last-config.json
             try:
@@ -156,7 +225,7 @@ class CameraObject:
                         last_config = json.load(f)
                 else:
                     last_config = {"cameras": []}
-                # Find the matching camera entry
+
                 updated = False
                 for camera in last_config["cameras"]:
                     if camera["Num"] == self.camera_num:
@@ -164,23 +233,43 @@ class CameraObject:
                         camera["Config_Location"] = profile_filename
                         updated = True
                         break
+
                 if not updated:
-                    print(f"Camera {self.camera_num} not found in camera-last-config.json.")
+                    logger.warning(
+                        "Camera %s not found in camera-last-config.json",
+                        self.camera_num,
+                    )
+
                 with open(self.last_config_path, "w") as f:
                     json.dump(last_config, f, indent=4)
-                print(f"Loaded profile '{profile_filename}' and updated camera-last-config.json.")
+
+                logger.info(
+                    "Loaded profile '%s' and updated camera-last-config.json",
+                    profile_filename,
+                )
+
             except Exception as e:
-                print(f"Error updating camera-last-config.json: {e}")
-            
-            print(f"Sucessfully loaded profile {profile_path}")
+                logger.error(
+                    "Error updating camera-last-config.json: %s",
+                    e,
+                    exc_info=True,
+                )
+
+            logger.info("Successfully loaded profile %s", profile_path)
             return True
+
         except Exception as e:
-            print(f"Error loading camera profile '{profile_filename}': {e}")
+            logger.error(
+                "Error loading camera profile '%s': %s",
+                profile_filename,
+                e,
+                exc_info=True,
+            )
             return False
 
-    def generate_camera_profile(self):
-        file_name = os.path.join(camera_profile_folder, 'camera-module-info.json')
-        # If there is no existing config, or the file doesn't exist, create a default profile
+    def generate_camera_profile(self) -> Dict:
+        file_name = os.path.join(self.profile_folder, "camera-module-info.json")
+
         if not self.camera_info.get("Has_Config", False) or not os.path.exists(file_name):
             self.camera_profile = {
                 "hflip": 0,
@@ -190,206 +279,318 @@ class CameraObject:
                 "resolutions": {
                     "StillCaptureResolution": 0,
                     "recording_resolution": 0,
-                    "streaming_resolution": 0
+                    "streaming_resolution": 0,
                 },
                 "saveRAW": False,
-                "controls": {}
+                "controls": {},
             }
         else:
-            # Load existing profile from file
-            with open(file_name, 'r') as file:
+            with open(file_name, "r") as file:
                 self.camera_profile = json.load(file)
+
         return self.camera_profile
-    
-    def initialize_controls_template(self, picamera2_controls, camera_control_db_path):
-        if os.path.isfile(camera_control_db_path):
+
+    def initialize_controls_template(
+        self,
+        picamera2_controls: Dict,
+        controls_db_path: str,
+    ) -> Dict:
+        if os.path.isfile(controls_db_path):
             try:
-                with open(camera_control_db_path, "r") as f:
+                with open(controls_db_path, "r") as f:
                     cam_ctrl_json = json.load(f)
             except Exception as e:
-                print(f"Error: Failed to extract json data from '{camera_control_db_path}': {e}")
+                logger.error(
+                    "Failed to extract JSON data from '%s': %s",
+                    controls_db_path,
+                    e,
+                    exc_info=True,
+                )
                 return {}
+
             if "sections" not in cam_ctrl_json:
-                print("Error: 'sections' key not found in cam_ctrl_json!")
-                return {cam_ctrl_json}  # Return unchanged if it's not structured as expected
+                logger.error("'sections' key not found in cam_ctrl_json!")
+                return cam_ctrl_json
         else:
-            print(f"Error: file {camera_control_db_path} doesn't exist")
+            logger.error("Controls DB file does not exist: %s", controls_db_path)
             return {}
+
         # Initialize empty controls in camera_profile
         self.camera_profile["controls"] = {}
+
         for section in cam_ctrl_json["sections"]:
             if "settings" not in section:
-                print(f"Warning: Missing 'settings' key in section: {section.get('title', 'Unknown')}")
-                continue        
-            section_enabled = False  # Track if any setting is enabled
+                logger.warning(
+                    "Missing 'settings' key in section: %s",
+                    section.get("title", "Unknown"),
+                )
+                continue
+
+            section_enabled: bool = False
+
             for setting in section["settings"]:
                 if not isinstance(setting, dict):
-                    print(f"Warning: Unexpected setting format: {setting}")
-                    continue  # Skip if it's not a dictionary
-                setting_id = setting.get("id")  # Use `.get()` to avoid crashes
-                source = setting.get("source", None)  # Check if source exists
-                original_enabled = setting.get("enabled", False)  # Preserve original enabled state
-                
+                    logger.warning("Unexpected setting format: %s", setting)
+                    continue
+
+                setting_id: Optional[str] = setting.get("id")
+                source: Optional[str] = setting.get("source")
+                original_enabled: bool = setting.get("enabled", False)
+
                 if source == "controls":
                     if setting_id in picamera2_controls:
                         min_val, max_val, default_val = picamera2_controls[setting_id]
-                        print(f"Updating {setting_id}: Min={min_val}, Max={max_val}, Default={default_val}")  # Debugging
+
+                        logger.debug(
+                            "Updating control %s: min=%s max=%s default=%s",
+                            setting_id,
+                            min_val,
+                            max_val,
+                            default_val,
+                        )
+
                         setting["min"] = min_val
                         setting["max"] = max_val
+
                         if default_val is not None:
                             setting["default"] = default_val
                         else:
-                            default_val = False if isinstance(min_val, bool) else min_val                        
-                        if setting["enabled"]:
+                            default_val = False if isinstance(min_val, bool) else min_val
+
+                        if setting.get("enabled"):
                             self.camera_profile["controls"][setting_id] = default_val
-                        setting["enabled"] = original_enabled  
+
+                        setting["enabled"] = original_enabled
+
                         if original_enabled:
-                            section_enabled = True                 
+                            section_enabled = True
                     else:
-                        print(f"Disabling {setting_id}: Not found in picamera2_controls")  # Debugging
-                        setting["enabled"] = False  # Disable setting         
+                        logger.debug(
+                            "Disabling control %s: not found in picamera2_controls",
+                            setting_id,
+                        )
+                        setting["enabled"] = False
+
                 elif source == "generatedresolutions":
                     resolution_options = [
-                        {"value": i, "label": f"{w} x {h}", "enabled": True}
+                        {
+                            "value": i,
+                            "label": f"{w} x {h}",
+                            "enabled": True,
+                        }
                         for i, (w, h) in enumerate(self.camera_resolutions)
                     ]
-                    # Use the dynamically generated resolutions
                     setting["options"] = resolution_options
                     section_enabled = True
-                    print(f"Updated {setting_id} with generated resolutions")
+
+                    logger.debug(
+                        "Updated %s with generated resolutions",
+                        setting_id,
+                    )
+
                 elif source == "video_resolutions":
                     resolution_options = [
-                        {"value": i, "label": f"{w} x {h}", "enabled": True}
+                        {
+                            "value": i,
+                            "label": f"{w} x {h}",
+                            "enabled": True,
+                        }
                         for i, (w, h) in enumerate(self.video_resolutions)
                     ]
                     setting["options"] = resolution_options
                     section_enabled = True
+
                 else:
-                    print(f"Skipping {setting_id}: No source specified, keeping existing values.")
-                    section_enabled = True  
-            
+                    logger.debug(
+                        "Skipping %s: no source specified, keeping existing values",
+                        setting_id,
+                    )
+                    section_enabled = True
+
                 if "childsettings" in setting:
                     for child in setting["childsettings"]:
-                        child_id = child.get("id")
-                        child_source = child.get("source", None)
-                        if child_source == "controls" and child_id in picamera2_controls:
+                        child_id: Optional[str] = child.get("id")
+                        child_source: Optional[str] = child.get("source")
+
+                        if (
+                            child_source == "controls"
+                            and child_id in picamera2_controls
+                        ):
                             min_val, max_val, default_val = picamera2_controls[child_id]
-                            print(f"Updating Child Setting {child_id}: Min={min_val}, Max={max_val}, Default={default_val}")  # Debugging
+
+                            logger.debug(
+                                "Updating child control %s: min=%s max=%s default=%s",
+                                child_id,
+                                min_val,
+                                max_val,
+                                default_val,
+                            )
+
                             child["min"] = min_val
                             child["max"] = max_val
-                            self.camera_profile["controls"][child_id] = default_val if default_val is not None else min_val
+
+                            self.camera_profile["controls"][child_id] = (
+                                default_val if default_val is not None else min_val
+                            )
+
                             if default_val is not None:
-                                child["default"] = default_val  
+                                child["default"] = default_val
+
                             child["enabled"] = child.get("enabled", False)
+
                             if child["enabled"]:
-                                section_enabled = True  
+                                section_enabled = True
                         else:
-                            print(f"Skipping or Disabling Child Setting {child_id}: Not found or no source specified")
+                            logger.debug(
+                                "Skipping or disabling child setting %s",
+                                child_id,
+                            )
+
             section["enabled"] = section_enabled
-        print(f"Initialized camera_profile controls: {self.camera_profile}")
+
+        logger.debug(
+            "Initialized camera_profile controls: %s",
+            self.camera_profile,
+        )
         return cam_ctrl_json
 
-    def update_settings(self, setting_id, setting_value, init=False):
-        # Handle hflip and vflip separately
+    def update_settings(
+        self,
+        setting_id: str,
+        setting_value,
+        init: bool = False,
+    ):
         if setting_id in ["hflip", "vflip"]:
             try:
                 self.camera_profile[setting_id] = bool(int(setting_value))
+
                 if not init:
                     self.reconfigure_video_pipeline()
 
-                print(f"Applied transform: {setting_id} -> {setting_value} (Camera restarted)")
+                logger.info(
+                    "Applied transform: %s -> %s",
+                    setting_id,
+                    setting_value,
+                )
             except ValueError as e:
-                print(f"⚠️ Error: {e}")
-        elif setting_id == "StillCaptureResolution":
-            self.camera_profile['resolutions'][setting_id] = int(setting_value)
-            print(f"Applied StillCaptureResolution index {setting_value} -> {self.camera_resolutions[int(setting_value)]}")
+                logger.error("Invalid value for %s: %s", setting_id, e)
 
-        # -----------------------------
-        # Video Resolutions: Recording / Streaming
-        # -----------------------------
+        elif setting_id == "StillCaptureResolution":
+            self.camera_profile["resolutions"][setting_id] = int(setting_value)
+
+            logger.info(
+                "Applied StillCaptureResolution index %s -> %s",
+                setting_value,
+                self.camera_resolutions[int(setting_value)],
+            )
 
         elif setting_id == "recording_resolution":
             self.set_recording_resolution(int(setting_value))
-            self.camera_profile['resolutions'][setting_id] = int(setting_value)
-            print(f"Applied recording_resolution index {setting_value} -> {self.video_resolutions[int(setting_value)]}")
+            self.camera_profile["resolutions"][setting_id] = int(setting_value)
+
+            logger.info(
+                "Applied recording_resolution index %s -> %s",
+                setting_value,
+                self.video_resolutions[int(setting_value)],
+            )
+
             if not init:
                 self.reconfigure_video_pipeline()
 
         elif setting_id == "streaming_resolution":
             self.set_streaming_resolution(int(setting_value))
-            self.camera_profile['resolutions'][setting_id] = int(setting_value)
-            print(f"Applied streaming_resolution index {setting_value} -> {self.video_resolutions[int(setting_value)]}")
+            self.camera_profile["resolutions"][setting_id] = int(setting_value)
+
+            logger.info(
+                "Applied streaming_resolution index %s -> %s",
+                setting_value,
+                self.video_resolutions[int(setting_value)],
+            )
+
             if not init:
                 self.reconfigure_video_pipeline()
 
         elif setting_id == "saveRAW":
-            try:
-                self.camera_profile[setting_id] = setting_value
-                print(f"Applied transform: {setting_id} -> {setting_value}")
-            except ValueError as e:
-                print(f"[ERROR]: {e}")
+            self.camera_profile[setting_id] = setting_value
+            logger.info("Applied setting: %s -> %s", setting_id, setting_value)
+
         else:
-            # Convert setting_value to correct type
             if "." in str(setting_value):
                 setting_value = float(setting_value)
             else:
                 setting_value = int(setting_value)
-            # Apply the setting
+
             self.picam2.set_controls({setting_id: setting_value})
-            # Store in camera_profile["controls"]
             self.camera_profile.setdefault("controls", {})[setting_id] = setting_value
-        # Update live settings
-        updated = False
+
+        updated: bool = False
+
         for section in self.live_controls.get("sections", []):
             for setting in section.get("settings", []):
                 if setting["id"] == setting_id:
-                    setting["value"] = setting_value  # Update main setting
+                    setting["value"] = setting_value
                     updated = True
                     break
-                # Check child settings
+
                 for child in setting.get("childsettings", []):
                     if child["id"] == setting_id:
-                        child["value"] = setting_value  # Update child setting
+                        child["value"] = setting_value
                         updated = True
                         break
-            if updated:
-                break  # Exit loop once found
-        if not updated:
-            print(f"[WARNING]: Setting {setting_id} not found in live_controls!")
-        return setting_value  # Returning for confirmation
 
-    def sync_live_controls(self):
-        """Updates self.live_controls to match self.camera_profile without resetting defaults."""
+            if updated:
+                break
+
+        if not updated:
+            logger.warning(
+                "Setting %s not found in live_controls",
+                setting_id,
+            )
+
+        return setting_value
+
+    def sync_live_controls(self) -> None:
+        """Sync live_controls with camera_profile values."""
         for section in self.live_controls.get("sections", []):
             for setting in section.get("settings", []):
                 setting_id = setting["id"]
+
                 if setting_id in self.camera_profile["controls"]:
                     setting["value"] = self.camera_profile["controls"][setting_id]
-                # Sync child settings
+
                 for child in setting.get("childsettings", []):
                     child_id = child["id"]
                     if child_id in self.camera_profile["controls"]:
                         child["value"] = self.camera_profile["controls"][child_id]
-        print("Live controls updated to match camera profile.")
 
-    def apply_profile_controls(self):
+        logger.debug("Live controls synced with camera profile")
+
+    def apply_profile_controls(self) -> None:
         if "controls" in self.camera_profile:
             try:
                 for setting_id, setting_value in self.camera_profile["controls"].items():
                     self.picam2.set_controls({setting_id: setting_value})
-                    self.update_settings(setting_id, setting_value)  # Use the loop variables
-                    print(f"Applied Control: {setting_id} -> {setting_value}")
-                print("All profile controls applied successfully")
-            except Exception as e:
-                print(f"[ERROR] applying profile controls: {e}")
+                    self.update_settings(setting_id, setting_value)
+                    logger.debug(
+                        "Applied profile control: %s -> %s",
+                        setting_id,
+                        setting_value,
+                    )
 
-    def generate_video_resolutions(self):
+                logger.info("All profile controls applied successfully")
+            except Exception as e:
+                logger.error(
+                    "Error applying profile controls: %s",
+                    e,
+                    exc_info=True,
+                )
+
+    def generate_video_resolutions(self) -> List:
         resolutions = set()
 
         for mode in self.sensor_modes:
             sw, sh = mode["size"]
 
-            # resolution candidates - may be changed
             for w, h in [
                 (1920, 1080),
                 (1536, 864),
@@ -397,37 +598,46 @@ class CameraObject:
                 (1152, 648),
                 (768, 432),
             ]:
-                if w <= ENCODER_MAX[0] and h <= ENCODER_MAX[1]:
-                    if w <= sw and h <= sh:
-                        resolutions.add((w, h))
+                if (
+                    w <= H264_ENCODER_MAX_VID_RES[0]
+                    and h <= H264_ENCODER_MAX_VID_RES[1]
+                    and w <= sw
+                    and h <= sh
+                ):
+                    resolutions.add((w, h))
 
         return sorted(resolutions, reverse=True)
 
-    def find_best_sensor_mode(self, video_resolution):
+    def find_best_sensor_mode(self, video_resolution: tuple) -> Dict:
         tw, th = video_resolution
 
         candidates = [
-            m for m in self.sensor_modes
-            if m["size"][0] >= tw and m["size"][1] >= th
+            mode
+            for mode in self.sensor_modes
+            if mode["size"][0] >= tw and mode["size"][1] >= th
         ]
 
         if not candidates:
             raise ValueError("No suitable sensor mode found")
 
-        # priorice smallest resolution
+        # Prioritize smallest suitable resolution
         return min(candidates, key=lambda m: m["size"][0] * m["size"][1])
 
-    def reconfigure_video_pipeline(self):
+
+    def reconfigure_video_pipeline(self) -> bool:
         if self.active_capture_still or self.active_recording:
-            print("Failed to reconfigure video pipeline since there is an active still capture or recording")
+            logger.warning(
+                "Failed to reconfigure video pipeline: active still capture or recording"
+            )
             return False
-        rec_index = self.camera_profile["resolutions"]["recording_resolution"]
-        stream_index = self.camera_profile["resolutions"]["streaming_resolution"]
+
+        rec_index: int = self.camera_profile["resolutions"]["recording_resolution"]
+        stream_index: int = self.camera_profile["resolutions"]["streaming_resolution"]
 
         rec = self.video_resolutions[rec_index]
         stream = self.video_resolutions[stream_index]
 
-        # define larger resolution
+        # define main and lores streams
         if rec[0] * rec[1] >= stream[0] * stream[1]:
             main_size = rec
             lores_size = stream
@@ -439,7 +649,7 @@ class CameraObject:
             self.main_stream = "streaming"
             self.lores_stream = "recording"
 
-        # define apropriate sensor mode
+        # determine appropriate sensor mode
         mode = self.find_best_sensor_mode(main_size)
 
         was_streaming = self.active_stream
@@ -460,7 +670,7 @@ class CameraObject:
                 sensor={
                     "output_size": mode["size"],
                     "bit_depth": mode["bit_depth"]
-                }
+                },
             )
 
             self.picam2.configure(self.video_config)
@@ -469,81 +679,89 @@ class CameraObject:
         if was_streaming:
             self.start_streaming()
 
-        # update sensor mode in camera profile
+        # update sensor mode in profile
         self.camera_profile["sensor_mode"] = self.sensor_modes.index(mode)
 
-        print("✅ Video pipeline reconfigured")
-        print(f"   main:  {main_size} ({self.main_stream})")
-        print(f"   lores: {lores_size} ({self.lores_stream})")
+        logger.info("✅ Video pipeline reconfigured")
+        logger.info("   main:  %s (%s)", main_size, self.main_stream)
+        logger.info("   lores: %s (%s)", lores_size, self.lores_stream)
 
         return True
 
-    def get_recording_stream(self):
+    def get_recording_stream(self) -> str:
         return "main" if self.main_stream == "recording" else "lores"
 
-    def get_streaming_stream(self):
+    def get_streaming_stream(self) -> str:
         return "main" if self.main_stream == "streaming" else "lores"
 
-
-    def get_recording_resolution(self):
+    def get_recording_resolution(self) -> tuple:
         return self.video_resolutions[
             self.camera_profile["resolutions"]["recording_resolution"]
         ]
 
-    def get_streaming_resolution(self):
+    def get_streaming_resolution(self) -> tuple:
         return self.video_resolutions[
             self.camera_profile["resolutions"]["streaming_resolution"]
         ]
 
-    def set_recording_resolution(self, resolution_index: int):
+    def set_recording_resolution(self, resolution_index: int) -> None:
         self.camera_profile["resolutions"]["recording_resolution"] = int(resolution_index)
         self.reconfigure_video_pipeline()
 
-    def set_streaming_resolution(self, resolution_index: int):
+    def set_streaming_resolution(self, resolution_index: int) -> None:
         self.camera_profile["resolutions"]["streaming_resolution"] = int(resolution_index)
         self.reconfigure_video_pipeline()
 
-    def create_profile(self, filename):
+    def create_profile(self, filename: str) -> bool:
         """Save the current camera profile and update camera-last-config.json."""
         try:
-            print(self.camera_profile)
-            # Ensure .json is not already in the filename
+            logger.debug("Saving camera profile: %s", self.camera_profile)
+
             if filename.lower().endswith(".json"):
                 filename = filename[:-5]
-            profile_path = os.path.join(camera_profile_folder, f"{filename}.json")
-            # Save the profile
+
+            profile_path = os.path.join(self.profile_folder, f"{filename}.json")
+
             with open(profile_path, "w") as f:
                 json.dump(self.camera_profile, f, indent=4)
-            # ✅ Update camera-last-config.json
+
+            # Update camera-last-config.json
             try:
                 if os.path.exists(self.last_config_path):
                     with open(self.last_config_path, "r") as f:
                         last_config = json.load(f)
                 else:
-                    last_config = {"cameras": []}  # Create an empty structure if missing
-                # Find the camera entry matching the current camera number
+                    last_config = {"cameras": []}
+
                 updated = False
                 for camera in last_config["cameras"]:
                     if camera["Num"] == self.camera_num:
                         camera["Has_Config"] = True
-                        camera["Config_Location"] = f"{filename}.json"  # Set the new config file
+                        camera["Config_Location"] = f"{filename}.json"
                         updated = True
                         break
+
                 if not updated:
-                    print(f"Warning: Camera {self.camera_num} not found in camera-last-config.json.")
-                # Save the updated configuration back
+                    logger.warning(
+                        "Camera %s not found in camera-last-config.json", self.camera_num
+                    )
+
                 with open(self.last_config_path, "w") as f:
                     json.dump(last_config, f, indent=4)
-                print(f"Updated camera-last-config.json for camera {self.camera_num} after saving profile.")
+
+                logger.info(
+                    "Updated camera-last-config.json for camera %s", self.camera_num
+                )
             except Exception as e:
-                print(f"Error updating camera-last-config.json: {e}")
+                logger.error("Error updating camera-last-config.json: %s", e, exc_info=True)
+
             return True
         except Exception as e:
-            print(f"Error saving profile: {e}")
+            logger.error("Error saving profile: %s", e, exc_info=True)
             return False
 
-    def reset_to_default(self):
-        # Resets camera settings to default and applies them.
+    def reset_to_default(self) -> bool:
+        """Reset camera settings to default values and apply them."""
         self.camera_profile = {
             "hflip": 0,
             "vflip": 0,
@@ -551,7 +769,7 @@ class CameraObject:
             "resolutions": {
                 "StillCaptureResolution": 0,
                 "recording_resolution": 0,
-                "streaming_resolution": 0
+                "streaming_resolution": 0,
             },
             "saveRAW": False,
             "controls": {
@@ -574,70 +792,76 @@ class CameraObject:
                 "Contrast": 1.0,
                 "Saturation": 1.0,
                 "Sharpness": 1.0,
-                "ColourTemperature": 4000
-            }
+                "ColourTemperature": 4000,
+            },
         }
 
         # Apply video resolutions and orientation
         self.reconfigure_video_pipeline()
-        # Reinitialize UI settings
+
+        # Apply UI and camera controls
         self.update_settings("saveRAW", self.camera_profile["saveRAW"])
-        # Apply camera controls
         self.apply_profile_controls()
-        print("Camera profile reset to default and settings applied.")
+
+        logger.info("Camera profile reset to default and settings applied")
         return True
 
     #-----
     # Camera Information Functions
     #-----
 
-    def capture_metadata(self):
+    def capture_metadata(self) -> dict:
         self.metadata = self.picam2.capture_metadata()
-        #print(f"Metadata: {self.metadata}")
-        print(self.picam2.sensor_resolution)
+        logger.debug("Sensor resolution: %s", self.picam2.sensor_resolution)
         return self.metadata
 
-    def get_camera_module_spec(self):
+    def get_camera_module_spec(self) -> Optional[dict]:
         """Return camera module details for this camera."""
         camera_module = next(
-            (cam for cam in self.camera_module_info.get("camera_modules", [])
-            if cam["sensor_model"] == self.camera_info["Model"]),
-            None
+            (
+                cam
+                for cam in self.camera_module_info.get("camera_modules", [])
+                if cam["sensor_model"] == self.camera_info["Model"]
+            ),
+            None,
         )
         return camera_module
 
-    def get_sensor_mode(self):
+    def get_sensor_mode(self) -> Optional[int]:
+        """Return the index of the currently active sensor mode."""
         current_config = self.picam2.camera_configuration()
-        active_mode = current_config.get('sensor', {})  # Get the currently active sensor settings
-        active_mode_index = None  # Default to None if no match is found
-        # Find the matching sensor mode index
+        active_mode = current_config.get("sensor", {})
+        active_mode_index: Optional[int] = None
+
         for index, mode in enumerate(self.sensor_modes):
-            if mode['size'] == active_mode.get('output_size') and mode['bit_depth'] == active_mode.get('bit_depth'):
+            if (
+                mode["size"] == active_mode.get("output_size")
+                and mode["bit_depth"] == active_mode.get("bit_depth")
+            ):
                 active_mode_index = index
                 break
-        print(f"Active Sensor Mode: {active_mode_index}")
+
+        logger.info("Active Sensor Mode: %s", active_mode_index)
         return active_mode_index
 
-    def generate_camera_resolutions(self):
-        """
-        Precompute a list of resolutions based on the available sensor modes.
-        This list is shared between still capture and live feed resolution settings.
-        """
+    def generate_camera_resolutions(self) -> List[tuple]:
+        """Precompute available resolutions based on sensor modes."""
         if not self.sensor_modes:
-            print("[WARNING]: No sensor modes available!")
+            logger.warning("No sensor modes available!")
             return []
 
-        # Extract sensor mode resolutions
-        resolutions = sorted(set(mode['size'] for mode in self.sensor_modes if 'size' in mode), reverse=True)
+        resolutions = sorted(
+            set(mode["size"] for mode in self.sensor_modes if "size" in mode),
+            reverse=True,
+        )
 
         if not resolutions:
-            print("[WARNING]: No valid resolutions found in sensor modes!")
+            logger.warning("No valid resolutions found in sensor modes!")
             return []
 
-        max_resolution = resolutions[0]  # Highest resolution
+        max_resolution = resolutions[0]
         aspect_ratio = max_resolution[0] / max_resolution[1]
 
-        # Generate midpoint resolutions
         extra_resolutions = []
         for i in range(len(resolutions) - 1):
             w1, h1 = resolutions[i]
@@ -645,7 +869,6 @@ class CameraObject:
             midpoint = ((w1 + w2) // 2, (h1 + h2) // 2)
             extra_resolutions.append(midpoint)
 
-        # Add two extra smaller resolutions at the end
         last_w, last_h = resolutions[-1]
         half_res = (last_w // 2, last_h // 2)
         inbetween_res = ((last_w + half_res[0]) // 2, (last_h + half_res[1]) // 2)
@@ -654,49 +877,43 @@ class CameraObject:
         resolutions.append(inbetween_res)
         resolutions.append(half_res)
 
-        # Store in camera object for later use
         self.available_resolutions = sorted(set(resolutions), reverse=True)
-
         return self.available_resolutions
 
     #-----
     # Camera Streaming Functions
     #-----
 
-    def start_streaming(self):
+    def start_streaming(self) -> None:
         if self.active_stream:
-            print("[INFO] Skip starting stream, since there is already an active stream")
+            logger.info("Skip starting stream, already active")
             return
 
         stream_name = self.get_streaming_stream()
-
         with self.lock:
             self.picam2.start_recording(
-                self.encoder_stream,
-                output=self.output_stream,
-                name=stream_name
+                self.encoder_stream, output=self.output_stream, name=stream_name
             )
-
             self.active_stream = True
-            print(f"[INFO] Starting streaming on '{stream_name}' stream")
+            logger.info("Streaming started on '%s' stream", stream_name)
 
-    def stop_streaming(self):
-        if not self.active_stream:  # Skip if there is no active stream
-            print("[INFO] Skip stopping stream, since there is no active stream")
+    def stop_streaming(self) -> None:
+        if not self.active_stream:
+            logger.info("Skip stopping stream, no active stream")
             return
-        else:
-            with self.lock:
-                self.picam2.stop_recording()
-                self.active_stream = False
-                print("[INFO] Streaming stopped")
+
+        with self.lock:
+            self.picam2.stop_recording()
+            self.active_stream = False
+            logger.info("Streaming stopped")
 
     #-----
     # Camera Recording Functions
     #-----
 
-    def start_recording(self, filename_recording):
+    def start_recording(self, filename_recording: str) -> tuple[bool, Optional[str]]:
         if self.active_recording:
-            print("[INFO] Skip starting recording, since there is already an active recording")
+            logger.info("Skip starting recording, already active")
             return False, None
 
         stream_name = self.get_recording_stream()
@@ -706,63 +923,63 @@ class CameraObject:
         try:
             with self.lock:
                 self.picam2.start_recording(
-                    self.encoder_recording,
-                    output_recording,
-                    name=stream_name
+                    self.encoder_recording, output_recording, name=stream_name
                 )
-
                 self.output_recording = output_recording
                 self.active_recording = True
                 self.filename_recording = filename_recording
-                print(f"[INFO] Recording {filename_recording} started")
-
+                logger.info("Recording '%s' started", filename_recording)
                 return True, filename_recording
         except Exception as e:
-            print(f"[ERROR] Failed to start recording {filename_recording}: {e}")
-            return False            
+            logger.error("Failed to start recording '%s': %s", filename_recording, e, exc_info=True)
+            return False, None
 
-    def stop_recording(self):
+    def stop_recording(self) -> bool:
         if not self.active_recording:
-            print("[INFO] Skip stopping recording, since there is no active recording")
+            logger.info("Skip stopping recording, no active recording")
             return False
+
         with self.lock:
             self.picam2.stop_recording()
             self.output_recording = None
             self.active_recording = False
             self.active_stream = False
-
-            print(f"[INFO] Recording {self.filename_recording} stopped")
+            logger.info("Recording '%s' stopped", self.filename_recording)
 
         self.start_streaming()
-
         return True
 
     #-----
     # Camera Capture Functions
     #-----
 
-    def capture_still(self, filepath, raw=False):
+    def capture_still(self, filepath: str, raw: bool = False) -> Optional[str]:
         with self.lock:
             if self.active_capture_still:
-                print(f"Skip to capture still image {filepath}, since there is another active process capturing a still image on this camera")
+                logger.warning(
+                    "Skip capturing still image '%s', another capture is active", filepath
+                )
                 return None
-            
-            else:
-                self.active_capture_still = True
+            self.active_capture_still = True
 
-        still_resoultion_index = self.camera_profile['resolutions']['StillCaptureResolution']
-        still_resolution = self.camera_resolutions[still_resoultion_index]
+        still_index = self.camera_profile["resolutions"]["StillCaptureResolution"]
+        still_resolution = self.camera_resolutions[still_index]
 
-        recording_resolution_index = self.camera_profile["resolutions"]["recording_resolution"]
-        recording_resolution = self.video_resolutions[recording_resolution_index]
+        rec_index = self.camera_profile["resolutions"]["recording_resolution"]
+        recording_resolution = self.video_resolutions[rec_index]
 
-        # set sensor mode based on higher resolution (streaming resolution or still image resolution) to guarantee, that the FOV of the still image is not smaller than the stream shown in webui (FOV still image >= FOV stream)
+        # choose sensor mode for capture
         if still_resolution[0] * still_resolution[1] >= recording_resolution[0] * recording_resolution[1]:
             mode = self.find_best_sensor_mode(still_resolution)
         else:
             mode = self.find_best_sensor_mode(recording_resolution)
 
-        still_config = self.picam2.create_still_configuration(buffer_count=1, main={"size": still_resolution}, sensor={"output_size": mode["size"], "bit_depth": mode["bit_depth"]}, controls={"FrameDurationLimits": (100, 10000000000)})
+        still_config = self.picam2.create_still_configuration(
+            buffer_count=1,
+            main={"size": still_resolution},
+            sensor={"output_size": mode["size"], "bit_depth": mode["bit_depth"]},
+            controls={"FrameDurationLimits": (100, 10_000_000_000)},
+        )
 
         self.stop_recording()
         self.stop_streaming()
@@ -772,30 +989,39 @@ class CameraObject:
             self.picam2.configure(still_config)
             self.camera_profile["sensor_mode"] = self.sensor_modes.index(mode)
             self.picam2.start()
-            # camera.picam2.capture_file(filepath)
 
-            if raw:
-                print(f"DEBUG: Start capturing raw image {filepath}")
-                # This will be the new way to save images at max quality just need to make the save as DNG setting available
-                buffers, metadata = self.picam2.switch_mode_and_capture_buffers(still_config, ["main", "raw"])
-                self.picam2.helpers.save(self.picam2.helpers.make_image(buffers[0], still_config["main"]), metadata, filepath)
-                self.picam2.helpers.save_dng(buffers[1], metadata, still_config["raw"], filepath)
-            else:
-                print(f"DEBUG: Start capturing non-raw image {filepath}")
-                # This will be the new way to save images at max quality just need to make the save as DNG setting available
-                buffers, metadata = self.picam2.switch_mode_and_capture_buffers(still_config, ["main"])
-                self.picam2.helpers.save(self.picam2.helpers.make_image(buffers[0], still_config["main"]), metadata, filepath)
+            try:
+                if raw:
+                    logger.debug("Capturing raw image '%s'", filepath)
+                    buffers, metadata = self.picam2.switch_mode_and_capture_buffers(
+                        still_config, ["main", "raw"]
+                    )
+                    self.picam2.helpers.save(
+                        self.picam2.helpers.make_image(buffers[0], still_config["main"]),
+                        metadata,
+                        filepath,
+                    )
+                    self.picam2.helpers.save_dng(buffers[1], metadata, still_config["raw"], filepath)
+                else:
+                    logger.debug("Capturing non-raw image '%s'", filepath)
+                    buffers, metadata = self.picam2.switch_mode_and_capture_buffers(still_config, ["main"])
+                    self.picam2.helpers.save(
+                        self.picam2.helpers.make_image(buffers[0], still_config["main"]),
+                        metadata,
+                        filepath,
+                    )
+            finally:
+                self.active_capture_still = False
 
-            logging.info(f"Successuffly captured image {filepath}")
-            self.active_capture_still = False
-            return filepath
+        logger.info("Successfully captured image '%s'", filepath)
+        return filepath
 
-    def capture_still_from_feed(self, filepath):
+    def capture_still_from_feed(self, filepath: str) -> Optional[str]:
         try:
             request = self.picam2.capture_request()
-            request.save("main", f'{filepath}')
-            print(f"Image captured successfully. Path: {filepath}")
-            return f'{filepath}.jpg'
+            request.save("main", f"{filepath}")
+            logger.info("Image captured successfully. Path: %s", filepath)
+            return f"{filepath}.jpg"
         except Exception as e:
-            print(f"Error capturing image: {e}")
+            logger.error("Error capturing image '%s': %s", filepath, e, exc_info=True)
             return None
