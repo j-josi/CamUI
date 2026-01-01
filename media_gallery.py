@@ -3,26 +3,28 @@ import os
 import logging
 import subprocess
 from datetime import datetime
+from typing import List, Tuple, Optional, Dict, Any
 
-# Image handeling imports
 from PIL import Image, ImageOps, ImageEnhance
 
 ####################
 # MediaGallery Class
 ####################
 
-class MediaGallery:
-    def __init__(self, upload_folder):
-        self.upload_folder = upload_folder
-        self.image_exts = ('.jpg', '.jpeg')
-        self.video_exts = ('.mp4',)
+logger = logging.getLogger(__name__)
 
-    def get_image_resolution(self, path):
+class MediaGallery:
+    def __init__(self, upload_folder: str):
+        self.upload_folder: str = upload_folder
+        self.image_exts: Tuple[str, ...] = ('.jpg', '.jpeg')
+        self.video_exts: Tuple[str, ...] = ('.mp4',)
+
+    def get_image_resolution(self, path: str) -> Tuple[int, int]:
         with Image.open(path) as img:
             width, height = img.size
         return width, height
 
-    def get_video_resolution(self, path):
+    def get_video_resolution(self, path: str) -> Tuple[Optional[int], Optional[int]]:
         try:
             result = subprocess.run(
                 [
@@ -42,13 +44,13 @@ class MediaGallery:
             stream = data.get("streams", [{}])[0]
             return stream.get("width"), stream.get("height")
         except Exception as e:
-            logging.warning(f"Could not read video resolution for {path}: {e}")
+            logger.warning(f"Could not read video resolution for {path}: {e}")
             return None, None
 
-    def get_media_files(self, type="all"):
+    def get_media_files(self, type: str = "all") -> List[Dict[str, Any]]:
         try:
             files = os.listdir(self.upload_folder)
-            media = []
+            media: List[Dict[str, Any]] = []
 
             for f in files:
                 ext = os.path.splitext(f)[1].lower()
@@ -69,7 +71,7 @@ class MediaGallery:
                     continue
 
                 path = os.path.join(self.upload_folder, f)
-                item = {
+                item: Dict[str, Any] = {
                     "filename": f,
                     "timestamp": timestamp,
                     "type": "video" if ext in self.video_exts else "image",
@@ -93,30 +95,32 @@ class MediaGallery:
             return media
 
         except Exception as e:
-            logging.error(f"Media loading error: {e}")
+            logger.error(f"Media loading error: {e}")
             return []
 
-    def get_media_slice(self, offset=0, limit=20, type="all"):
+    def get_media_slice(self, offset: int = 0, limit: int = 20, type: str = "all") -> List[Dict[str, Any]]:
         """Return a slice of media for infinite scroll."""
         all_media = self.get_media_files(type=type)
-        sliced_media = all_media[offset:offset + limit]
-        return sliced_media
+        return all_media[offset:offset + limit]
 
-    def find_last_image_taken(self):
+    def find_last_image_taken(self) -> Optional[str]:
         """Find the most recent image taken."""
         all_images = self.get_media_files(type="image")
-        
         if all_images:
             first_image = all_images[0]
-            print(f"Filename: {first_image['filename']}")
-            image = first_image['filename']
+            logger.debug(f"Last image found: {first_image['filename']}")
+            return first_image['filename']
         else:
-            print("No image files found.")
-            image = None
-        
-        return image  # Extract only the filename
+            logger.debug("No image files found.")
+            return None
 
-    def apply_filter(self, filepath, rotation=None, brightness=None, contrast=None):
+    def apply_filter(
+        self,
+        filepath: str,
+        rotation: Optional[float] = None,
+        brightness: Optional[float] = None,
+        contrast: Optional[float] = None
+    ) -> Optional[str]:
         try:
             img = Image.open(filepath)
 
@@ -127,7 +131,6 @@ class MediaGallery:
             if contrast:
                 img = ImageEnhance.Contrast(img).enhance(contrast)
 
-            # spilt fileextension from path
             base, ext = os.path.splitext(filepath)
             edited_filepath = f"{base}_edited{ext}"
 
@@ -135,65 +138,62 @@ class MediaGallery:
             return edited_filepath
 
         except Exception as e:
-            print(f"Error applying filter: {e}")
+            logger.error(f"Error applying filter to {filepath}: {e}")
             return None
 
-    def delete_media(self, filename):
+    def delete_media(self, filename: str) -> Tuple[bool, str]:
         media_path = os.path.join(self.upload_folder, filename)
 
         if os.path.exists(media_path):
             try:
                 os.remove(media_path)
-                logging.info(f"Deleted media: {filename}")
-                # Check if corresponding .dng file exists
+                logger.info(f"Deleted media: {filename}")
+
                 dng_file = os.path.splitext(filename)[0] + '.dng'
-                # print(dng_file)
-                has_dng = os.path.exists(os.path.join(self.upload_folder, dng_file))
-                # print(has_dng)
-                if has_dng:
+                if os.path.exists(os.path.join(self.upload_folder, dng_file)):
                     os.remove(os.path.join(self.upload_folder, dng_file))
+                    logger.info(f"Deleted corresponding DNG file: {dng_file}")
+
                 return True, f"Media '{filename}' deleted successfully."
             except Exception as e:
-                logging.error(f"Error deleting media {filename}: {e}")
+                logger.error(f"Error deleting media {filename}: {e}")
                 return False, "Failed to delete media"
         else:
             return False, "Media not found"
-    
-    def save_edit(self, filename, edits, save_option, new_filename=None):
+
+    def save_edit(
+        self,
+        filename: str,
+        edits: Dict[str, Any],
+        save_option: str,
+        new_filename: Optional[str] = None
+    ) -> Tuple[bool, str]:
         """Apply edits to an image and save it based on user selection."""
         image_path = os.path.join(self.upload_folder, filename)
-        print(f"Applying edits to {filename}: {edits}")
+        logger.debug(f"Applying edits to {filename}: {edits}")
 
         if not os.path.exists(image_path):
             return False, "Original image not found."
 
         try:
             with Image.open(image_path) as img:
-                img = img.convert("RGB")  # Ensure no transparency issues
-
-                # Reset EXIF rotation before applying new rotation
+                img = img.convert("RGB")
                 img = ImageOps.exif_transpose(img)
 
-                # Convert brightness and contrast from 0-200 range to 0.1-2.0
                 if "brightness" in edits:
                     brightness_factor = max(0.1, float(edits["brightness"]) / 100)
-                    enhancer = ImageEnhance.Brightness(img)
-                    img = enhancer.enhance(brightness_factor)
+                    img = ImageEnhance.Brightness(img).enhance(brightness_factor)
 
                 if "contrast" in edits:
                     contrast_factor = max(0.1, float(edits["contrast"]) / 100)
-                    enhancer = ImageEnhance.Contrast(img)
-                    img = enhancer.enhance(contrast_factor)
+                    img = ImageEnhance.Contrast(img).enhance(contrast_factor)
 
-                # Apply absolute rotation (mod 360 to prevent stacking errors)
                 if "rotation" in edits:
                     rotation_angle = int(edits["rotation"]) % 360
-                    # Automatically convert the rotation to negative
                     rotation_angle = -rotation_angle
                     img = img.rotate(rotation_angle, expand=True)
-                    print(f"Applied rotation: {rotation_angle}°")
+                    logger.debug(f"Applied rotation: {rotation_angle}°")
 
-                # Determine save path
                 if save_option == "replace":
                     save_path = image_path
                 elif save_option == "new_file" and new_filename:
@@ -205,5 +205,5 @@ class MediaGallery:
                 return True, "Image saved successfully."
 
         except Exception as e:
-            logging.error(f"Error applying edits to image {filename}: {e}")
+            logger.error(f"Error applying edits to image {filename}: {e}")
             return False, "Failed to edit image."

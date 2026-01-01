@@ -4,9 +4,6 @@ import io
 import logging
 import json
 import time
-import re
-import glob
-import math
 import tempfile
 import zipfile
 from typing import Optional, Dict, List
@@ -254,7 +251,7 @@ def about():
 @app.route('/system_settings')
 def system_settings():
     """Render system settings page."""
-    print(camera_manager.camera_module_info)
+    logger.debug(camera_manager.camera_module_info)
     return render_template(
         'system_settings.html',
         firmware_control=firmware_control,
@@ -574,7 +571,7 @@ def update_setting():
         setting_id = data.get("id")
         new_value = data.get("value")
 
-        print(f"Received update for Camera {camera_num}: {setting_id} -> {new_value}")
+        logger.info(f"Received update for Camera {camera_num}: {setting_id} -> {new_value}")
 
         camera = camera_manager.get_camera(camera_num)
         camera.update_settings(setting_id, new_value)
@@ -673,7 +670,7 @@ def fetch_metadata(camera_num):
         return jsonify({"error": "Invalid camera number"}), 400
 
     metadata = camera.capture_metadata()
-    print(f"Camera {camera_num} Metadata: {metadata}")
+    logger.debug(f"Camera {camera_num} Metadata: {metadata}")
     return jsonify(metadata)
 
 @app.route("/load_profile", methods=["POST"])
@@ -780,7 +777,7 @@ def download_image(filename):
         image_path = os.path.join(app.config['media_upload_folder'], filename)
         return send_file(image_path, as_attachment=True)
     except Exception as e:
-        print(f"\nError downloading image:\n{e}\n")
+        logger.error(f"\nError downloading image:\n{e}\n")
         abort(500)
 
 @app.route("/download_media_bulk", methods=["POST"])
