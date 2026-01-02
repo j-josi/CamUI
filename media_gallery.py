@@ -49,6 +49,8 @@ class MediaGallery:
 
     def get_media_files(self, type: str = "all", excluded_files: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         try:
+            excluded_files = excluded_files or []
+
             files = os.listdir(self.upload_folder)
             media: List[Dict[str, Any]] = []
 

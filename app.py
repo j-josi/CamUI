@@ -1,3 +1,6 @@
+from gevent import monkey
+monkey.patch_all()
+
 # System / Standard Library Imports
 import os
 import io
@@ -18,6 +21,8 @@ from flask import (
     Flask, render_template, request, jsonify, Response, 
     send_file, abort, session, redirect, url_for, send_from_directory
 )
+# Flask-SocketIO Imports
+from flask_socketio import SocketIO, emit, join_room, leave_room
 
 # Image handling imports
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageOps, ExifTags
@@ -49,6 +54,15 @@ from media_gallery import MediaGallery
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)  # Random 32-character hexadecimal string
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+# --------------------
+# SocketIO Initialization
+# --------------------
+socketio = SocketIO(
+    app,
+    async_mode="gevent",
+    cors_allowed_origins="*",
+)
 
 ####################
 # Default Values & Paths
@@ -173,6 +187,37 @@ def generate_filename(camera_manager: CameraManager, cam_num: int, file_extensio
     else:
         return f"{timestamp}{file_extension}"
 
+
+####################
+# SocketIO Events
+####################
+
+@socketio.on("connect")
+def handle_connect():
+    logger.info(f"Client connected: {request.sid}")
+
+@socketio.on("disconnect")
+def handle_disconnect():
+    logger.info(f"Client disconnected: {request.sid}")
+
+@socketio.on("message")
+def handle_message(data):
+    logger.info(f"Received message from client {request.sid}: {data}")
+    emit("response", {"data": "Message received"}, broadcast=False)
+
+# Client joins camera room
+@socketio.on("join_camera_room")
+def handle_join_camera_room(data):
+    camera_num = data.get("camera_num")
+    if camera_num is not None:
+        room_name = f"camera_{camera_num}"
+        join_room(room_name)
+
+        # camera = camera_manager.get_camera(camera_num)
+        # if camera:
+        #     # send initial active_recording state
+        #     emit("camera_status", {"active_recording": camera._state["active_recording"]}, room=room_name)
+
 ####################
 # Flask routes - WebUI routes
 ####################
@@ -233,11 +278,11 @@ def camera_status_long(camera_num):
         start = time.time()
 
         while time.time() - start < timeout:
-            if camera.active_recording != last_state:
-                return jsonify(success=True, active_recording=camera.active_recording)
+            if camera._state["active_recording"] != last_state:
+                return jsonify(success=True, active_recording=camera._state["active_recording"])
             time.sleep(0.2)
 
-        return jsonify(success=True, active_recording=camera.active_recording)
+        return jsonify(success=True, active_recording=camera._state["active_recording"])
 
     except Exception as e:
         return jsonify(success=False, error=str(e)), 500
@@ -453,7 +498,6 @@ def capture_still(camera_num):
         logging.debug(f"📁 New image filename: {image_filename}")
 
         success = camera.capture_still(image_filename, camera.camera_profile["saveRAW"])
-
         camera.reconfigure_video_pipeline()
 
         if success:
@@ -514,27 +558,35 @@ def start_recording(camera_num):
         return jsonify(success=False, error="Invalid camera number"), 400
 
     recording_filename = generate_filename(camera_manager, camera_num, ".mp4")
-    logging.debug(f"📁 New video filename: {recording_filename}")
-
     success = camera.start_recording(recording_filename)
-    message = (
-        f"Recording of file {recording_filename} started successfully"
-        if success else "Failed to start recording"
-    )
+
+    room_name = f"camera_{camera_num}"
+    # sync/push camera_status to all clients connected to this websocket room
+    socketio.emit("camera_status", {"active_recording": True}, room=room_name)
+
+    message = f"Recording of file {recording_filename} started successfully" if success else "Failed to start recording"
     return jsonify(success=success, message=message)
 
 @app.route("/stop_recording/<int:camera_num>")
 def stop_recording(camera_num):
-    """Stop video recording on the specified camera."""
     camera = camera_manager.get_camera(camera_num)
     if not camera:
         return jsonify(success=False, error="Invalid camera number"), 400
 
+    # save if stream was active on function call
+    was_streaming = camera._state["active_stream"]
     success = camera.stop_recording()
-    message = (
-        f"Recording of file {camera.filename_recording} stopped successfully"
-        if success else "Failed to stop recording"
-    )
+
+    room_name = f"camera_{camera_num}"
+    # sync/push camera_status to all clients connected to this websocket room
+    socketio.emit("camera_status", {"active_recording": False}, room=room_name)
+
+    # start streaming again, if stream was active on function call
+    if was_streaming:
+        camera._state["active_stream"] = False
+        camera.start_streaming()
+
+    message = f"Recording of file {camera.filename_recording} stopped successfully" if success else "Failed to stop recording"
     return jsonify(success=success, message=message)
 
 @app.route('/preview_<int:camera_num>', methods=['POST'])
@@ -710,7 +762,7 @@ def get_media_slice():
     active_recordings = []
 
     for key, camera in camera_manager.cameras.items():
-        if camera.active_recording:
+        if camera._state["active_recording"]:
             active_recordings.append(camera.filename_recording)
 
     media_files = media_gallery_manager.get_media_slice(
@@ -835,11 +887,25 @@ def add_header(response):
 # Start Flask application
 ####################
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='PiCamera2 WebUI')
-    parser.add_argument('--port', type=int, default=8080, help='Port number to run the web server on')
-    parser.add_argument('--ip', type=str, default='0.0.0.0', help='IP to which the web server is bound to')
-    args = parser.parse_args()
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser(description='PiCamera2 WebUI')
+#     parser.add_argument('--port', type=int, default=8080, help='Port number to run the web server on')
+#     parser.add_argument('--ip', type=str, default='0.0.0.0', help='IP to which the web server is bound to')
+#     args = parser.parse_args()
     
-    # Uncomment the following line to run Flask's internal server (only recommended for debugging - if used in production, a external server like gunicorn is highly recommended)
-    # app.run(host=args.ip, port=args.port)
+#     # Uncomment the following line to run Flask's internal server (only recommended for debugging - if used in production, a external server like gunicorn is highly recommended)
+#     # app.run(host=args.ip, port=args.port)
+
+# --------------------
+# Start server
+# --------------------
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description='PiCamera2 WebUI with WebSocket')
+    parser.add_argument('--port', type=int, default=8080, help='Port to run server on')
+    parser.add_argument('--ip', type=str, default='0.0.0.0', help='IP to bind server to')
+    args = parser.parse_args()
+
+    logger.info(f"Starting Flask-SocketIO server on {args.ip}:{args.port}")
+    socketio.run(app, host=args.ip, port=args.port)

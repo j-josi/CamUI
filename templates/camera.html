@@ -2,6 +2,7 @@
 {% block content %}
 
 <script type="text/javascript" src="{{ url_for('static', filename='js/reader.js') }}"></script>
+<script type="text/javascript" src="{{ url_for('static', filename='js/socketio/socket.io.min.js') }}"></script>
 
 <div class="mx-4">
   <div class="row">
@@ -148,6 +149,29 @@ let mouseOverControls = false;
 let previousVolume = 0.75;
 let sliderHideTimeout = null;
 
+let socket = io();
+
+// -------------- SocketIO --------------
+socket.emit("join_camera_room", { camera_num: cameraNum });
+
+// Receive camera status event
+socket.on("camera_status", (data) => {
+    if (data.active_recording !== undefined) {
+        isRecording = data.active_recording;
+        updateRecordButton();
+
+        const captureBtn = document.getElementById("captureButton");
+        setButtonState(captureBtn, !isRecording);
+
+        if (!isRecording) {
+            showOverlay();
+            reader?.close();
+            initReader().then(() => setTimeout(hideOverlay, 1000));
+        }
+    }
+});
+
+
 /* Hover Volume Slider */
 volumeIcon.addEventListener("mouseenter", () => {
   clearTimeout(sliderHideTimeout);
@@ -175,6 +199,7 @@ async function initReader() {
 }
 
 function startStatusLongPolling() {
+    if (socket.connected) return; // disable long-polling with active websocket connection
     fetch(`/camera_status_long/${cameraNum}?state=${isRecording}`)
         .then(r => {
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -356,35 +381,48 @@ document.getElementById("captureButton").addEventListener("click", function(even
 });
 
 /* ---------- Video Recording ---------- */
+// function startVideoRecording() {
+//     fetch(`/start_recording/${cameraNum}`)
+//         .then(response => response.json())
+//         .then(data => {
+//             if (data.success) {
+//                 console.log(data.message || "Recording started");
+//             } else {
+//                 console.error(data.error || data.message);
+//             }
+//         })
+//         .catch(err => {
+//             console.error("Failed to start recording:", err);
+//         });
+// }
+
+// function stopVideoRecording() {
+//     fetch(`/stop_recording/${cameraNum}`)
+//         .then(response => response.json())
+//         .then(data => {
+//             if (data.success) {
+//                 console.log(data.message || "Recording stopped");
+//             } else {
+//                 console.error(data.error || data.message);
+//             }
+//         })
+//         .catch(err => {
+//             console.error("Failed to stop recording:", err);
+//         });
+// }
+
 function startVideoRecording() {
     fetch(`/start_recording/${cameraNum}`)
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                console.log(data.message || "Recording started");
-            } else {
-                console.error(data.error || data.message);
-            }
-        })
-        .catch(err => {
-            console.error("Failed to start recording:", err);
-        });
+        .then(r => r.json())
+        .catch(err => console.error(err));
 }
 
 function stopVideoRecording() {
     fetch(`/stop_recording/${cameraNum}`)
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                console.log(data.message || "Recording stopped");
-            } else {
-                console.error(data.error || data.message);
-            }
-        })
-        .catch(err => {
-            console.error("Failed to stop recording:", err);
-        });
+        .then(r => r.json())
+        .catch(err => console.error(err));
 }
+
 
 function updateRecordButton() {
     const btn   = document.getElementById("recordVideoButton");

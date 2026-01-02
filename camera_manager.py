@@ -148,15 +148,18 @@ class CameraManager:
         self._sync_last_config()
 
         for cam_info in self.connected_cameras:
-            camera_obj = CameraObject(
-                cam_info,
-                self.camera_module_info,
-                self.media_upload_folder,
-                self.last_config_path,
-                self.camera_controls_db_path,
-                self.camera_profile_folder,
-            )
-            self.cameras[cam_info["Num"]] = camera_obj
+            try:
+                camera_obj = CameraObject(
+                    cam_info,
+                    self.camera_module_info,
+                    self.media_upload_folder,
+                    self.last_config_path,
+                    self.camera_controls_db_path,
+                    self.camera_profile_folder,
+                )
+                self.cameras[cam_info["Num"]] = camera_obj
+            except Exception as e:
+                logger.error("Failed to initialize camera %s: %s", cam_info["Num"], e)
 
         for key, camera in self.cameras.items():
             logger.info("Initialized camera %s: %s", key, camera.camera_info)
