@@ -146,7 +146,7 @@ def get_profiles():
                     data = json.load(pf)
                 profiles.append({
                     "filename": f,
-                    "model": data.get("model", "Unknown"),
+                    "model": data.get("info", {}).get("model", "Unknown"),
                     "active": (f == get_active_profile()["cameras"][0]["Config_Location"])
                 })
             except Exception as e:
@@ -246,7 +246,7 @@ def handle_set_camera_state(data):
     path = data.get("path")
     value = data.get("value")
 
-    print(f"DEBUG: handle_set_camera_state - path={path}, value={value}")
+    # print(f"DEBUG: handle_set_camera_state - path={path}, value={value}")
 
     if camera_num not in camera_manager.cameras:
         emit("error", {"message": f"Camera {camera_num} not found"})
@@ -311,7 +311,7 @@ def camera_info(camera_num):
     if not camera:
         return render_template('error.html', message="Error: Camera not found"), 404
 
-    camera_module_spec = camera.camera_module_spec
+    camera_module_spec = camera.get_camera_module_spec()
     return render_template('camera_info.html', camera_data=camera_module_spec, camera_num=camera_num)
 
 @app.route("/camera_status_long/<int:camera_num>")
@@ -653,27 +653,27 @@ def preview(camera_num):
     except Exception as e:
         return jsonify(success=False, message=str(e))
 
-@app.route('/update_setting', methods=['POST'])
-def update_setting():
-    """Update a single camera setting from the WebUI."""
-    try:
-        data = request.json
-        camera_num = data.get("camera_num")
-        setting_id = data.get("id")
-        new_value = data.get("value")
+# @app.route('/update_setting', methods=['POST'])
+# def update_setting():
+#     """Update a single camera setting from the WebUI."""
+#     try:
+#         data = request.json
+#         camera_num = data.get("camera_num")
+#         setting_id = data.get("id")
+#         new_value = data.get("value")
 
-        logger.info(f"Received update for Camera {camera_num}: {setting_id} -> {new_value}")
+#         logger.info(f"Received update for Camera {camera_num}: {setting_id} -> {new_value}")
 
-        camera = camera_manager.get_camera(camera_num)
-        camera.update_settings(setting_id, new_value)
+#         camera = camera_manager.get_camera(camera_num)
+#         camera.update_settings(setting_id, new_value)
 
-        return jsonify({
-            "success": True,
-            "message": f"Received setting update for Camera {camera_num}: {setting_id} -> {new_value}"
-        })
+#         return jsonify({
+#             "success": True,
+#             "message": f"Received setting update for Camera {camera_num}: {setting_id} -> {new_value}"
+#         })
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
 
 @app.route('/camera_controls')
 def redirect_to_home():

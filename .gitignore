@@ -2,7 +2,7 @@ static/gallery/*
 .venv/*
 venv
 *.bak
-static/camera_config/*
+static/camera_profiles/*
 camera-active-profile.json
 
 # ---> macOS

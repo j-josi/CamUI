@@ -150,7 +150,7 @@ class CameraManager:
         def callback():
             state = camera.get_state()
             room = f"camera_{camera.camera_num}"
-            print(f"DEBUG: _make_state_callback, state: {state}, room: {room}")
+            # print(f"DEBUG: _make_state_callback, state: {state}, room: {room}")
             self.socketio.emit(
                 "camera_state",
                 {"camera_num": camera.camera_num, "state": state},
