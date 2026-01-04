@@ -75,7 +75,7 @@ mediamtx_webrtc_port = 8889
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
-last_config_path = os.path.join(current_dir, 'camera-last-config.json')
+camera_active_profile_path = os.path.join(current_dir, 'camera-active-profile.json')
 camera_module_info_path = os.path.join(current_dir, 'camera-module-info.json')
 camera_controls_db_path = os.path.join(current_dir, 'camera_controls_db.json')
 camera_profile_folder = os.path.join(current_dir, 'static/camera_profiles')
@@ -87,7 +87,7 @@ media_upload_folder = os.path.join(current_dir, 'static/gallery')
 app.config['media_upload_folder'] = media_upload_folder
 os.makedirs(media_upload_folder, exist_ok=True)
 
-minimum_last_config = {"cameras": []}
+minimum_active_config = {"cameras": []}
 
 DEFAULT_EPOCH = datetime(1970, 1, 1)
 _MONOTONIC_START = time.monotonic()
@@ -97,7 +97,7 @@ _MONOTONIC_START = time.monotonic()
 ####################
 camera_manager = CameraManager(
     camera_module_info_path=camera_module_info_path,
-    last_config_path=last_config_path,
+    camera_active_profile_path=camera_active_profile_path,
     media_upload_folder=media_upload_folder,
     camera_controls_db_path=camera_controls_db_path,
     camera_profile_folder=camera_profile_folder,
@@ -131,7 +131,7 @@ def load_or_initialize_config(file_path, default_config):
     return config
 
 def get_active_profile():
-    return load_or_initialize_config(last_config_path, minimum_last_config)
+    return load_or_initialize_config(camera_active_profile_path, minimum_active_config)
 
 def get_profiles():
     profiles = []

@@ -3,7 +3,7 @@ static/gallery/*
 venv
 *.bak
 static/camera_config/*
-camera-last-config.json
+camera-active-profile.json
 
 # ---> macOS
 # General

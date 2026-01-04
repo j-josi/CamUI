@@ -19,7 +19,7 @@ class CameraManager:
     def __init__(
         self,
         camera_module_info_path: str,
-        last_config_path: str,
+        camera_active_profile_path: str,
         media_upload_folder: str,
         camera_controls_db_path: str,
         camera_profile_folder: str,
@@ -27,7 +27,7 @@ class CameraManager:
     ):
         """
         :param camera_module_info_path: Path to camera-module-info.json
-        :param last_config_path: Path to camera-last-config.json
+        :param camera_active_profile_path: Path to camera-active-profile.json
         :param media_upload_folder: Path to the folder where photos and videos are stored (media gallery)
         :camera_controls_db_path: Path to file storing camera controls parameter, controllable via webui
         :camera_profile_folder: Path to folder storing files of saved camera profiles (.json)
@@ -45,7 +45,7 @@ class CameraManager:
             )
             self.camera_module_info = {}
 
-        self.last_config_path = last_config_path
+        self.camera_active_profile_path = camera_active_profile_path
         self.media_upload_folder = media_upload_folder
         self.camera_controls_db_path = camera_controls_db_path
         self.camera_profile_folder = camera_profile_folder
@@ -55,14 +55,14 @@ class CameraManager:
         self.cameras: Dict[int, CameraObject] = {}
         self.lock = threading.Lock()
 
-    def _load_last_config(self):
+    def _load_active_config(self):
         """Load the last configuration file or create an empty template."""
-        if os.path.exists(self.last_config_path):
-            with open(self.last_config_path, "r") as f:
-                self.last_config = json.load(f)
+        if os.path.exists(self.camera_active_profile_path):
+            with open(self.camera_active_profile_path, "r") as f:
+                self.active_config = json.load(f)
             logger.debug("Loaded last camera configuration from disk.")
         else:
-            self.last_config = {"cameras": []}
+            self.active_config = {"cameras": []}
             logger.info("No previous camera configuration found. Using empty template.")
 
     def _detect_connected_cameras(self) -> List[dict]:
@@ -100,21 +100,20 @@ class CameraManager:
                 "Model": connected_camera["Model"],
                 "Is_Pi_Cam": is_pi_cam,
                 "Has_Config": False,
-                "Config_Location": f"default_{connected_camera['Model']}.json",
+                "Config_Location": f"{connected_camera['Model']}_default.json",
             }
 
             currently_connected.append(camera_info)
 
-        self.connected_cameras = currently_connected
         return currently_connected
 
-    def _sync_last_config(self) -> List[dict]:
+    def _sync_active_config(self) -> List[dict]:
         """
         Compare currently connected cameras with the last configuration
         and update it if necessary.
         """
         existing_lookup = {
-            cam["Num"]: cam for cam in self.last_config.get("cameras", [])
+            cam["Num"]: cam for cam in self.active_config.get("cameras", [])
         }
 
         updated_cameras = []
@@ -140,9 +139,9 @@ class CameraManager:
                 logger.info("New camera detected and added to config: %s", cam)
                 updated_cameras.append(cam)
 
-        self.last_config = {"cameras": updated_cameras}
-        with open(self.last_config_path, "w") as f:
-            json.dump(self.last_config, f, indent=4)
+        self.active_config = {"cameras": updated_cameras}
+        with open(self.camera_active_profile_path, "w") as f:
+            json.dump(self.active_config, f, indent=4)
 
         self.connected_cameras = updated_cameras
         return updated_cameras
@@ -171,9 +170,9 @@ class CameraManager:
 
     def init_cameras(self):
         """Create CameraObject instances for all connected cameras."""
-        self._load_last_config()
-        self._detect_connected_cameras()
-        self._sync_last_config()
+        self._load_active_config()
+        self.connected_cameras = self._detect_connected_cameras()
+        self._sync_active_config()
 
         for cam_info in self.connected_cameras:
             try:
@@ -181,7 +180,7 @@ class CameraManager:
                     cam_info,
                     self.camera_module_info,
                     self.media_upload_folder,
-                    self.last_config_path,
+                    self.camera_active_profile_path,
                     self.camera_controls_db_path,
                     self.camera_profile_folder,
                 )

@@ -70,7 +70,7 @@ class CameraObject:
         camera: Dict,
         camera_module_info: Dict,
         upload_folder: str,
-        last_config_path: str,
+        camera_active_profile_path: str,
         controls_db_path: str,
         profile_folder: str,
     ) -> None:
@@ -79,7 +79,7 @@ class CameraObject:
         self.camera_module_info = camera_module_info
         self.camera_num: int = camera["Num"]
         self.upload_folder = upload_folder
-        self.last_config_path = last_config_path
+        self.camera_active_profile_path = camera_active_profile_path
         self.controls_db_path = controls_db_path
         self.profile_folder = profile_folder
 
@@ -138,7 +138,7 @@ class CameraObject:
         # ------------------------------------------------
         # Config & Controls
         # ------------------------------------------------
-        self._init_camera_configuration()
+
         # Initialize and sanitize control definitions
         self.live_controls = self._init_controls_from_db(
             self.get_ui_controls(),
@@ -147,6 +147,9 @@ class CameraObject:
 
         # Load last profile (sets state through setters!)
         self.load_active_profile()
+
+        # Initialize video configuration (stream and recording)
+        self.reconfigure_video_pipeline()
 
         # Sync actual camera values
         self._sync_controls_from_camera()
@@ -314,7 +317,7 @@ class CameraObject:
             # --------------------------------------------------
             # Update last config
             # --------------------------------------------------
-            self._update_last_config(profile_filename)
+            self._update_active_profile(profile_filename)
 
             logger.info("Camera profile '%s' loaded successfully", profile_filename)
             return True
@@ -364,7 +367,7 @@ class CameraObject:
             with open(profile_path, "w") as f:
                 json.dump(profile, f, indent=2)
 
-            self._update_last_config(f"{filename}.json")
+            self._update_active_profile(f"{filename}.json")
             logger.info("Camera profile saved: %s", profile_path)
             return True
 
@@ -372,25 +375,25 @@ class CameraObject:
             logger.error("Error saving profile: %s", e, exc_info=True)
             return False
 
-    def _update_last_config(self, profile_filename: str) -> None:
-        """Update camera-last-config.json with the latest profile."""
+    def _update_active_profile(self, profile_filename: str) -> None:
+        """Update camera-active-profile.json with the latest profile."""
         try:
-            last_config = {"cameras": []}
-            if os.path.exists(self.last_config_path):
-                with open(self.last_config_path, "r") as f:
-                    last_config = json.load(f)
+            active_config = {"cameras": []}
+            if os.path.exists(self.camera_active_profile_path):
+                with open(self.camera_active_profile_path, "r") as f:
+                    active_config = json.load(f)
 
-            for camera in last_config.get("cameras", []):
+            for camera in active_config.get("cameras", []):
                 if camera.get("Num") == self.camera_num:
                     camera["Has_Config"] = True
                     camera["Config_Location"] = profile_filename
                     break
 
-            with open(self.last_config_path, "w") as f:
-                json.dump(last_config, f, indent=4)
+            with open(self.camera_active_profile_path, "w") as f:
+                json.dump(active_config, f, indent=4)
 
         except Exception as e:
-            logger.error("Failed to update camera-last-config.json: %s", e, exc_info=True)
+            logger.error("Failed to update camera-active-profile.json: %s", e, exc_info=True)
 
     # def generate_profile(self) -> Dict:
     #     file_name = os.path.join(self.profile_folder, "camera-module-info.json")
