@@ -78,7 +78,7 @@
 <!-- ===================================== -->
 
 <div class="accordion" id="ProfileAccordion">
-    <!-- Load / Create / Reset / Delete camera profile -->
+    <!-- Load / Save / Reset / Delete camera profile -->
     <div class="accordion-item">
         <h2 class="accordion-header">
             <button class="accordion-button collapsed"
@@ -99,7 +99,7 @@
                     <button type="button" class="btn btn-primary active"
                             onclick="showProfileSection('loadProfile')">Load</button>
                     <button type="button" class="btn btn-primary"
-                            onclick="showProfileSection('createProfile')">Create</button>
+                            onclick="showProfileSection('saveProfile')">Save</button>
                     <button type="button" class="btn btn-warning"
                             onclick="showProfileSection('resetProfile')">Reset</button>
                     <button type="button" class="btn btn-danger"
@@ -116,7 +116,7 @@
                             <tr>
                                 <th>Select</th>
                                 <th>Filename</th>
-                                <th>Model</th>
+                                <th>Sensor</th>
                                 <th>Active</th>
                             </tr>
                         </thead>
@@ -156,14 +156,14 @@
 
                 </div>
 
-                <!-- Create Profile -->
-                <div id="createProfile" class="profile-section d-none">
+                <!-- Save Profile -->
+                <div id="saveProfile" class="profile-section d-none">
                     <input type="text"
                            class="form-control mb-2"
-                           id="createConfigFile"
+                           id="saveConfigFile"
                            placeholder="Enter profile name">
                     <button class="btn btn-primary"
-                            onclick="createProfile({{ camera.Num }})">Create</button>
+                            onclick="saveProfile({{ camera.Num }})">Save</button>
                 </div>
 
                 <!-- Reset Profile -->
@@ -183,7 +183,7 @@
                             <tr>
                                 <th>Select</th>
                                 <th>Filename</th>
-                                <th>Model</th>
+                                <th>Sensor</th>
                                 <th>Active</th> <!-- Neue Spalte -->
                             </tr>
                         </thead>
@@ -273,12 +273,12 @@
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Profile Model Mismatch</h5>
+                <h5 class="modal-title">Profile Sensor Mismatch</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                Profile "<span id="mismatchProfileName"></span>" was created for a different
-                camera model. Continue?
+                Profile "<span id="mismatchProfileName"></span>" was saved/configured for a different
+                camera sensor/model. Continue?
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -354,7 +354,7 @@ function applyProfile(profileName) {
             console.log("Profile loaded successfully.");
             showAlert(alertBox, "success", data.message);
             updateProfileList(); // Refresh profile list after loading
-            fetchCameraProfile(); 
+            // fetchCameraProfile(); 
         } else {
             console.log("Failed to load profile: " + data.error);
         }
@@ -362,8 +362,8 @@ function applyProfile(profileName) {
     .catch(error => console.error("Error loading profile:", error));
 }
 
-function createProfile(cameraNum) {
-    const filename = document.getElementById("createConfigFile").value;
+function saveProfile(cameraNum) {
+    const filename = document.getElementById("saveConfigFile").value;
     const alertBox = document.getElementById("profileAlert");
 
     if (!filename) {
@@ -371,7 +371,7 @@ function createProfile(cameraNum) {
         return;
     }
 
-    fetch(`/create_profile_${cameraNum}`, {
+    fetch(`/save_profile_${cameraNum}`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -384,7 +384,7 @@ function createProfile(cameraNum) {
             showAlert(alertBox, "success", data.message);
             updateProfileList(); // Refresh profile list after loading
         } else {
-            showAlert(alertBox, "danger", data.error || "Failed to create profile.");
+            showAlert(alertBox, "danger", data.error || "Failed to save profile.");
         }
     })
     .catch(error => {
@@ -402,7 +402,7 @@ function resetProfile(cameraNum) {
         if (data.success) {
             showAlert(document.getElementById("profileAlert"), "success", "Profile reset to default!");
             updateProfileList(); // Refresh profile list after loading
-            fetchCameraProfile(); // Fetch updated settings
+            // fetchCameraProfile(); // Fetch updated settings
         } else {
             showAlert(document.getElementById("profileAlert"), "danger", "Error: " + data.message);
         }
@@ -460,7 +460,7 @@ function deleteProfile(cameraNum, filename) {
                 "Profile deleted successfully."
             );
             updateProfileList();
-            fetchCameraProfile();
+            // fetchCameraProfile();
         } else {
             showAlert(
                 document.getElementById("deleteAlert"),
@@ -500,144 +500,144 @@ function confirmDeleteProfile() {
 }
 
 // Fetch updated settings after reset
-function fetchCameraProfile() {
-    fetch(`/get_camera_profile?camera_num=${camera_num}`)
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            updateUIFromCameraProfile(data.camera_profile);
-        } else {
-            console.error("Failed to fetch live controls:", data.error);
-        }
-    })
-    .catch(error => console.error("Error fetching live controls:", error));
-}
+// function fetchCameraProfile() {
+//     fetch(`/get_camera_profile?camera_num=${camera_num}`)
+//     .then(response => response.json())
+//     .then(data => {
+//         if (data.success) {
+//             updateUIFromCameraProfile(data.camera_profile);
+//         } else {
+//             console.error("Failed to fetch live controls:", data.error);
+//         }
+//     })
+//     .catch(error => console.error("Error fetching live controls:", error));
+// }
 
-function updateUIFromCameraProfile(cameraProfile) {
-    console.log("Updating UI from camera profile:", cameraProfile);
+// function updateUIFromCameraProfile(cameraProfile) {
+//     console.log("Updating UI from camera profile:", cameraProfile);
 
-    // Manually update hflip, vflip
-    const manualKeys = ["hflip", "vflip", "saveRAW"];
-    manualKeys.forEach(key => {
-        let element = document.getElementById(key);
-        if (element) {
-            if (element.type === "checkbox") {
-                element.checked = cameraProfile[key];
-                console.log(`Set ${key} (checkbox) to:`, element.checked);
-            } else {
-                element.value = cameraProfile[key];
-                console.log(`Set ${key} (input) to:`, element.value);
-            }
-        } else {
-            console.warn(`Element with ID '${key}' not found.`);
-        }
-    });
+//     // Manually update hflip, vflip
+//     const manualKeys = ["hflip", "vflip", "saveRAW"];
+//     manualKeys.forEach(key => {
+//         let element = document.getElementById(key);
+//         if (element) {
+//             if (element.type === "checkbox") {
+//                 element.checked = cameraProfile[key];
+//                 console.log(`Set ${key} (checkbox) to:`, element.checked);
+//             } else {
+//                 element.value = cameraProfile[key];
+//                 console.log(`Set ${key} (input) to:`, element.value);
+//             }
+//         } else {
+//             console.warn(`Element with ID '${key}' not found.`);
+//         }
+//     });
 
-    // Iterate through controls and update UI
-    if (cameraProfile.controls) {
-        for (const [key, value] of Object.entries(cameraProfile.controls)) {
-            let element = document.getElementById(key);
+//     // Iterate through controls and update UI
+//     if (cameraProfile.controls) {
+//         for (const [key, value] of Object.entries(cameraProfile.controls)) {
+//             let element = document.getElementById(key);
 
-            // If the element isn't found, check for radio buttons and checkboxes
-            if (!element) {
-                let radioElement = document.querySelector(`input[name="${key}"][value="${value}"]`);
-                if (radioElement) {
-                    radioElement.checked = true;
-                    console.log(`Set ${key} (radio) to: ${value}`);
-                    continue;
-                }
+//             // If the element isn't found, check for radio buttons and checkboxes
+//             if (!element) {
+//                 let radioElement = document.querySelector(`input[name="${key}"][value="${value}"]`);
+//                 if (radioElement) {
+//                     radioElement.checked = true;
+//                     console.log(`Set ${key} (radio) to: ${value}`);
+//                     continue;
+//                 }
 
-                let checkboxElement = document.querySelector(`input[name="${key}"]`);
-                if (checkboxElement && checkboxElement.type === "checkbox") {
-                    checkboxElement.checked = Boolean(value);
-                    console.log(`Set ${key} (checkbox) to:`, checkboxElement.checked);
-                    continue;
-                }
+//                 let checkboxElement = document.querySelector(`input[name="${key}"]`);
+//                 if (checkboxElement && checkboxElement.type === "checkbox") {
+//                     checkboxElement.checked = Boolean(value);
+//                     console.log(`Set ${key} (checkbox) to:`, checkboxElement.checked);
+//                     continue;
+//                 }
 
-                console.warn(`Element with ID '${key}' not found.`);
-                continue;
-            }
+//                 console.warn(`Element with ID '${key}' not found.`);
+//                 continue;
+//             }
 
-            // Handle different input types
-            if (element.type === "checkbox") {
-                element.checked = Boolean(value);
-                console.log(`Set ${key} (checkbox) to:`, element.checked);
-            } else if (element.type === "radio") {
-                let radioElement = document.getElementById(`${key}_${value}`);
-                if (radioElement) {
-                    radioElement.checked = true;
-                    console.log(`Set ${key} (radio) to: ${value}`);
-                } else {
-                    console.warn(`Radio button for ${key} with ID '${key}_${value}' not found.`);
-                }
-            } else {
-                element.value = value;
-                console.log(`Set ${key} (input) to:`, element.value);
-            }
+//             // Handle different input types
+//             if (element.type === "checkbox") {
+//                 element.checked = Boolean(value);
+//                 console.log(`Set ${key} (checkbox) to:`, element.checked);
+//             } else if (element.type === "radio") {
+//                 let radioElement = document.getElementById(`${key}_${value}`);
+//                 if (radioElement) {
+//                     radioElement.checked = true;
+//                     console.log(`Set ${key} (radio) to: ${value}`);
+//                 } else {
+//                     console.warn(`Radio button for ${key} with ID '${key}_${value}' not found.`);
+//                 }
+//             } else {
+//                 element.value = value;
+//                 console.log(`Set ${key} (input) to:`, element.value);
+//             }
 
-            // Update UI labels for range inputs
-            if (element.type === "range") {
-                let valueLabel = document.getElementById("current" + key);
-                if (valueLabel) {
-                    valueLabel.textContent = `Value: ${value}`;
-                    console.log(`Updated label for ${key} to:`, valueLabel.textContent);
-                }
-            }
-        }
-    } 
-    // Iterate through resolutions and update UI
-    if (cameraProfile.resolutions) {
-        for (const [key, value] of Object.entries(cameraProfile.resolutions)) {
-            let element = document.getElementById(key);
+//             // Update UI labels for range inputs
+//             if (element.type === "range") {
+//                 let valueLabel = document.getElementById("current" + key);
+//                 if (valueLabel) {
+//                     valueLabel.textContent = `Value: ${value}`;
+//                     console.log(`Updated label for ${key} to:`, valueLabel.textContent);
+//                 }
+//             }
+//         }
+//     } 
+//     // Iterate through resolutions and update UI
+//     if (cameraProfile.resolutions) {
+//         for (const [key, value] of Object.entries(cameraProfile.resolutions)) {
+//             let element = document.getElementById(key);
 
-            // If the element isn't found, check for radio buttons and checkboxes
-            if (!element) {
-                let radioElement = document.querySelector(`input[name="${key}"][value="${value}"]`);
-                if (radioElement) {
-                    radioElement.checked = true;
-                    console.log(`Set ${key} (radio) to: ${value}`);
-                    continue;
-                }
+//             // If the element isn't found, check for radio buttons and checkboxes
+//             if (!element) {
+//                 let radioElement = document.querySelector(`input[name="${key}"][value="${value}"]`);
+//                 if (radioElement) {
+//                     radioElement.checked = true;
+//                     console.log(`Set ${key} (radio) to: ${value}`);
+//                     continue;
+//                 }
 
-                let checkboxElement = document.querySelector(`input[name="${key}"]`);
-                if (checkboxElement && checkboxElement.type === "checkbox") {
-                    checkboxElement.checked = Boolean(value);
-                    console.log(`Set ${key} (checkbox) to:`, checkboxElement.checked);
-                    continue;
-                }
+//                 let checkboxElement = document.querySelector(`input[name="${key}"]`);
+//                 if (checkboxElement && checkboxElement.type === "checkbox") {
+//                     checkboxElement.checked = Boolean(value);
+//                     console.log(`Set ${key} (checkbox) to:`, checkboxElement.checked);
+//                     continue;
+//                 }
 
-                console.warn(`Element with ID '${key}' not found.`);
-                continue;
-            }
+//                 console.warn(`Element with ID '${key}' not found.`);
+//                 continue;
+//             }
 
-            // Handle different input types
-            if (element.type === "checkbox") {
-                element.checked = Boolean(value);
-                console.log(`Set ${key} (checkbox) to:`, element.checked);
-            } else if (element.type === "radio") {
-                let radioElement = document.getElementById(`${key}_${value}`);
-                if (radioElement) {
-                    radioElement.checked = true;
-                    console.log(`Set ${key} (radio) to: ${value}`);
-                } else {
-                    console.warn(`Radio button for ${key} with ID '${key}_${value}' not found.`);
-                }
-            } else {
-                element.value = value;
-                console.log(`Set ${key} (input) to:`, element.value);
-            }
+//             // Handle different input types
+//             if (element.type === "checkbox") {
+//                 element.checked = Boolean(value);
+//                 console.log(`Set ${key} (checkbox) to:`, element.checked);
+//             } else if (element.type === "radio") {
+//                 let radioElement = document.getElementById(`${key}_${value}`);
+//                 if (radioElement) {
+//                     radioElement.checked = true;
+//                     console.log(`Set ${key} (radio) to: ${value}`);
+//                 } else {
+//                     console.warn(`Radio button for ${key} with ID '${key}_${value}' not found.`);
+//                 }
+//             } else {
+//                 element.value = value;
+//                 console.log(`Set ${key} (input) to:`, element.value);
+//             }
 
-            // Update UI labels for range inputs
-            if (element.type === "range") {
-                let valueLabel = document.getElementById("current" + key);
-                if (valueLabel) {
-                    valueLabel.textContent = `Value: ${value}`;
-                    console.log(`Updated label for ${key} to:`, valueLabel.textContent);
-                }
-            }
-        }
-    }
-}
+//             // Update UI labels for range inputs
+//             if (element.type === "range") {
+//                 let valueLabel = document.getElementById("current" + key);
+//                 if (valueLabel) {
+//                     valueLabel.textContent = `Value: ${value}`;
+//                     console.log(`Updated label for ${key} to:`, valueLabel.textContent);
+//                 }
+//             }
+//         }
+//     }
+// }
 
 function showAlert(element, type, message) {
     element.className = `alert alert-${type}`;
@@ -697,21 +697,29 @@ function updateRadioChildVisibility(settingId) {
     }
 }
 
+// function updateSetting(settingId, newValue) {
+//     fetch("/update_setting", {
+//         method: "POST",
+//         headers: { "Content-Type": "application/json" },
+//         body: JSON.stringify({
+//             camera_num: camera_num,
+//             id: settingId,
+//             value: newValue
+//         })
+//     })
+//     .then(r => r.json())
+//     .then(data => {
+//         if (data.success) {
+//             console.log(`Updated: Camera ${camera_num}, ${settingId} -> ${newValue}`);
+//         }
+//     });
+// }
+
 function updateSetting(settingId, newValue) {
-    fetch("/update_setting", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            camera_num: camera_num,
-            id: settingId,
-            value: newValue
-        })
-    })
-    .then(r => r.json())
-    .then(data => {
-        if (data.success) {
-            console.log(`Updated: Camera ${camera_num}, ${settingId} -> ${newValue}`);
-        }
+    socket.emit("set_camera_state", {
+        camera_num: cameraNum,
+        path: `controls.${settingId}`,
+        value: newValue
     });
 }
 

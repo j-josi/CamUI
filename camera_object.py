@@ -146,7 +146,7 @@ class CameraObject:
         )
 
         # Load last profile (sets state through setters!)
-        self.load_saved_camera_profile()
+        self.load_active_profile()
 
         # Sync actual camera values
         self._sync_controls_from_camera()
@@ -175,6 +175,19 @@ class CameraObject:
         if current == value:
             return False
 
+        # Convert value to valid/supported type
+        control_type = type(current) if current is not None else None
+        if control_type is not None:
+            try:
+                if control_type is int:
+                    value = int(value)
+                elif control_type is float:
+                    value = float(value)
+                elif control_type is bool:
+                    value = bool(value)
+            except ValueError:
+                logger.warning("Failed to convert value for control %s: %s", name, value)
+
         self.picam2.set_controls({name: value})
         self._state["controls"][name] = value
         self._on_state_changed()
@@ -186,7 +199,7 @@ class CameraObject:
     def _on_state_changed(self):
         """
         Hook for infrastructure layer.
-        Re-bound in app.py.
+        Re-bound in camera_manager.py.
         """
         pass
 
@@ -241,19 +254,11 @@ class CameraObject:
         self.picam2.configure(self.video_config)
         self.picam2.start()
 
-    def load_saved_camera_profile(self) -> None:
-        """Load the saved camera profile if configured."""
-        logger.debug("load_saved_camera_profile")
+    def load_profile(self, profile_filename: str) -> bool:
+        """Load and apply a camera profile created via save_profile().
+        Model mismatch is allowed and must be handled by the caller/UI.
+        """
 
-        if not self.camera_info.get("Has_Config"):
-            return
-
-        profile_filename = self.camera_info.get("Config_Location")
-        if profile_filename:
-            self.load_camera_profile(profile_filename)
-
-    def load_camera_profile(self, profile_filename: str) -> bool:
-        """Load and apply a camera profile from a file."""
         profile_path = os.path.join(self.profile_folder, profile_filename)
         if not os.path.exists(profile_path):
             logger.warning("Profile file not found: %s", profile_path)
@@ -261,35 +266,111 @@ class CameraObject:
 
         try:
             with open(profile_path, "r") as f:
-                profile_data = json.load(f)
+                profile = json.load(f)
 
-            # -----------------------------
-            # Apply STATE
-            # -----------------------------
+            # --------------------------------------------------
+            # Model check (NON-BLOCKING)
+            # --------------------------------------------------
+            profile_model = profile.get("model")
+            camera_model = self.camera_info.get("Model")
+
+            if profile_model and profile_model != camera_model:
+                logger.warning(
+                    "Loading profile with mismatching model: profile=%s camera=%s",
+                    profile_model,
+                    camera_model,
+                )
+
+            # --------------------------------------------------
+            # Apply STATE (order matters)
+            # --------------------------------------------------
+
+            # 1. Simple state flags
             for key in ("hflip", "vflip", "saveRAW"):
-                if key in profile_data:
-                    self.set_state(key, profile_data[key])
+                if key in profile:
+                    self._state[key] = bool(profile[key])
 
-            if "resolutions" in profile_data:
-                for k, v in profile_data["resolutions"].items():
-                    self._state["resolutions"][k] = v
+            # 2. Resolutions
+            if "resolutions" in profile:
+                for k, v in profile["resolutions"].items():
+                    if k in self._state["resolutions"]:
+                        self._state["resolutions"][k] = int(v)
 
-            if "controls" in profile_data:
-                for ctrl, val in profile_data["controls"].items():
+            # 3. Controls
+            if "controls" in profile:
+                for ctrl, val in profile["controls"].items():
                     self.set_control(ctrl, val)
 
-            # Update last config
-            self._update_last_config(profile_filename)
-
-            # Reconfigure pipeline
+            # --------------------------------------------------
+            # Reconfigure pipeline once
+            # --------------------------------------------------
             self.reconfigure_video_pipeline()
 
-            logger.info("Successfully loaded camera profile '%s'", profile_filename)
+            # --------------------------------------------------
+            # Sync UI controls
+            # --------------------------------------------------
+            self.sync_live_controls()
+
+            # --------------------------------------------------
+            # Update last config
+            # --------------------------------------------------
+            self._update_last_config(profile_filename)
+
+            logger.info("Camera profile '%s' loaded successfully", profile_filename)
             return True
+
         except Exception as e:
-            logger.error("Error loading camera profile '%s': %s", profile_filename, e, exc_info=True)
+            logger.error(
+                "Error loading camera profile '%s': %s",
+                profile_filename,
+                e,
+                exc_info=True,
+            )
             return False
 
+    def load_active_profile(self) -> None:
+        """Load the active camera profile if configured."""
+
+        if not self.camera_info.get("Has_Config"):
+            return
+
+        profile_filename = self.camera_info.get("Config_Location")
+        if profile_filename:
+            self.load_profile(profile_filename)
+
+    def save_profile(self, filename: str) -> bool:
+        """Save current camera configuration as portable camera profile"""
+        try:
+            if filename.lower().endswith(".json"):
+                filename = filename[:-5]
+
+            profile_path = os.path.join(self.profile_folder, f"{filename}.json")
+
+            state = self.get_state()
+
+            profile = {
+                "model": self.camera_info.get("Model"),
+                "hflip": int(state.get("hflip", 0)),
+                "vflip": int(state.get("vflip", 0)),
+                "saveRAW": bool(state.get("saveRAW", False)),
+                "resolutions": {
+                    "StillCaptureResolution": state["resolutions"]["StillCaptureResolution"],
+                    "recording_resolution": state["resolutions"]["recording_resolution"],
+                    "streaming_resolution": state["resolutions"]["streaming_resolution"],
+                },
+                "controls": dict(state.get("controls", {})),
+            }
+
+            with open(profile_path, "w") as f:
+                json.dump(profile, f, indent=2)
+
+            self._update_last_config(f"{filename}.json")
+            logger.info("Camera profile saved: %s", profile_path)
+            return True
+
+        except Exception as e:
+            logger.error("Error saving profile: %s", e, exc_info=True)
+            return False
 
     def _update_last_config(self, profile_filename: str) -> None:
         """Update camera-last-config.json with the latest profile."""
@@ -311,29 +392,28 @@ class CameraObject:
         except Exception as e:
             logger.error("Failed to update camera-last-config.json: %s", e, exc_info=True)
 
+    # def generate_profile(self) -> Dict:
+    #     file_name = os.path.join(self.profile_folder, "camera-module-info.json")
 
-    def generate_camera_profile(self) -> Dict:
-        file_name = os.path.join(self.profile_folder, "camera-module-info.json")
+    #     if not self.camera_info.get("Has_Config", False) or not os.path.exists(file_name):
+    #         self.camera_profile = {
+    #             "hflip": 0,
+    #             "vflip": 0,
+    #             "sensor_mode": 0,
+    #             "model": self.camera_info.get("Model", "Unknown"),
+    #             "resolutions": {
+    #                 "StillCaptureResolution": 0,
+    #                 "recording_resolution": 0,
+    #                 "streaming_resolution": 0,
+    #             },
+    #             "saveRAW": False,
+    #             "controls": {},
+    #         }
+    #     else:
+    #         with open(file_name, "r") as file:
+    #             self.camera_profile = json.load(file)
 
-        if not self.camera_info.get("Has_Config", False) or not os.path.exists(file_name):
-            self.camera_profile = {
-                "hflip": 0,
-                "vflip": 0,
-                "sensor_mode": 0,
-                "model": self.camera_info.get("Model", "Unknown"),
-                "resolutions": {
-                    "StillCaptureResolution": 0,
-                    "recording_resolution": 0,
-                    "streaming_resolution": 0,
-                },
-                "saveRAW": False,
-                "controls": {},
-            }
-        else:
-            with open(file_name, "r") as file:
-                self.camera_profile = json.load(file)
-
-        return self.camera_profile
+    #     return self.camera_profile
 
     def _init_controls_from_db(
         self,
@@ -499,7 +579,6 @@ class CameraObject:
         )
         return cam_ctrl_json
 
-
     def update_settings(self, setting_id: str, setting_value, init: bool = False):
         """Update a camera setting or control in STATE."""
         try:
@@ -543,7 +622,6 @@ class CameraObject:
             logger.error("Error updating setting '%s' with value '%s': %s", setting_id, setting_value, e)
             return None
 
-
     def sync_live_controls(self) -> None:
         """Sync live_controls with STATE controls."""
         for section in self.live_controls.get("sections", []):
@@ -559,7 +637,7 @@ class CameraObject:
 
         logger.debug("Live controls synced with STATE")
 
-    def apply_profile_controls(self):
+    def apply_state_controls(self):
         """Apply all controls from STATE to the actual camera."""
         controls = self._state.get("controls", {})
         try:
@@ -663,23 +741,6 @@ class CameraObject:
         self._state["resolutions"]["streaming_resolution"] = int(resolution_index)
         self.reconfigure_video_pipeline()
 
-    def create_profile(self, filename: str) -> bool:
-        """Save current STATE as camera profile snapshot."""
-        try:
-            if filename.lower().endswith(".json"):
-                filename = filename[:-5]
-            profile_path = os.path.join(self.profile_folder, f"{filename}.json")
-
-            with open(profile_path, "w") as f:
-                json.dump(self.get_state(), f, indent=2)
-
-            self._update_last_config(f"{filename}.json")
-            logger.info("Camera profile saved: %s", profile_path)
-            return True
-        except Exception as e:
-            logger.error("Error saving profile: %s", e, exc_info=True)
-            return False
-
     def reset_to_default(self) -> bool:
         """Reset camera settings to default STATE and apply them."""
         self._state.update({
@@ -716,9 +777,9 @@ class CameraObject:
             "sensor_mode": None,
         })
 
+        self.apply_state_controls()
         self.reconfigure_video_pipeline()
         self.update_settings("saveRAW", self._state["saveRAW"])
-        self.apply_profile_controls()
         logger.info("Camera STATE reset to default and settings applied")
         return True
 

@@ -154,23 +154,85 @@ let socket = io();
 // -------------- SocketIO --------------
 socket.emit("join_camera_room", { camera_num: cameraNum });
 
-// Receive camera status event
-socket.on("camera_status", (data) => {
-    if (data.active_recording !== undefined) {
-        isRecording = data.active_recording;
-        updateRecordButton();
-
-        const captureBtn = document.getElementById("captureButton");
-        setButtonState(captureBtn, !isRecording);
-
-        if (!isRecording) {
-            showOverlay();
-            reader?.close();
-            initReader().then(() => setTimeout(hideOverlay, 1000));
-        }
-    }
+socket.on("camera_state", payload => {
+    if (payload.camera_num !== cameraNum) return;
+    applyStateToUI(payload.state);
 });
 
+// socket.on("camera_state", (payload) => {
+//     if (payload.camera_num !== cameraNum) return;
+//     applyStateToUI(payload.state);
+// });
+
+// // Receive camera status event
+// socket.on("camera_status", (data) => {
+//     if (data.active_recording !== undefined) {
+//         isRecording = data.active_recording;
+//         updateRecordButton();
+
+//         const captureBtn = document.getElementById("captureButton");
+//         setButtonState(captureBtn, !isRecording);
+
+//         if (!isRecording) {
+//             showOverlay();
+//             reader?.close();
+//             initReader().then(() => setTimeout(hideOverlay, 1000));
+//         }
+//     }
+// });
+
+function updateControl(name, value) {
+    socket.emit("update_control", {
+        camera_num: CAMERA_NUM,
+        control: name,
+        value: value
+    });
+}
+
+function applyStateToUI(state) {
+    console.log("applyStateToUI: ", state);
+    if (!state) return;
+
+    // simple flags
+    ["hflip", "vflip", "saveRAW"].forEach(key => {
+        const el = document.getElementById(key);
+        if (el && el.type === "checkbox") {
+            el.checked = Boolean(state[key]);
+        }
+    });
+
+    // controls
+    if (state.controls) {
+        for (const [key, value] of Object.entries(state.controls)) {
+            const el = document.getElementById(key);
+
+            if (!el) continue;
+
+            if (el.type === "checkbox") {
+                el.checked = Boolean(value);
+            } else {
+                el.value = value;
+            }
+
+            const label = document.getElementById("current" + key);
+            if (label) label.textContent = `Value: ${value}`;
+        }
+    }
+
+    // resolutions
+    if (state.resolutions) {
+        for (const [key, value] of Object.entries(state.resolutions)) {
+            const el = document.getElementById(`${key}_${value}`);
+            if (el) el.checked = true;
+        }
+    }
+
+    // recording state
+    if (state.active_recording !== undefined) {
+        isRecording = state.active_recording;
+        updateRecordButton();
+    }
+}
 
 /* Hover Volume Slider */
 volumeIcon.addEventListener("mouseenter", () => {
@@ -198,54 +260,54 @@ async function initReader() {
   });
 }
 
-function startStatusLongPolling() {
-    if (socket.connected) return; // disable long-polling with active websocket connection
-    fetch(`/camera_status_long/${cameraNum}?state=${isRecording}`)
-        .then(r => {
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            return r.json();
-        })
-        .then(data => {
-            if (!data?.success) return;
+// function startStatusLongPolling() {
+//     if (socket.connected) return; // disable long-polling with active websocket connection
+//     fetch(`/camera_status_long/${cameraNum}?state=${isRecording}`)
+//         .then(r => {
+//             if (!r.ok) throw new Error(`HTTP ${r.status}`);
+//             return r.json();
+//         })
+//         .then(data => {
+//             if (!data?.success) return;
 
-            if (data.active_recording !== isRecording) {
-                isRecording = data.active_recording;
+//             if (data.active_recording !== isRecording) {
+//                 isRecording = data.active_recording;
 
-                const captureBtn = document.getElementById("captureButton");
+//                 const captureBtn = document.getElementById("captureButton");
 
-                if (!isRecording) { // restart webrtc reader and show overlay for 2s
-                    showOverlay();
-                    reader?.close();
-                    initReader();
-                    setTimeout(() => {
-                        hideOverlay();
-                        // Capture wieder aktivieren
-                        setButtonState(captureBtn, true);
-                        setButtonState(recordBtn, true);
-                        updateRecordButton();
-                    }, 2000);
-                } else {
-                    setButtonState(captureBtn, false);
-                    updateRecordButton();
-                }
-            }
-            startStatusLongPolling();
-        })
-        .catch(err => {
-            // Don't log abort / load failed error to console, since this is a normal behaviour when using long polls (i.e. on page refresh)
-            if (
-                err.name === "AbortError" ||
-                err.message === "Load failed"
-            ) {
-                // still & expected
-                setTimeout(startStatusLongPolling, 1000);
-                return;
-            }
+//                 if (!isRecording) { // restart webrtc reader and show overlay for 2s
+//                     showOverlay();
+//                     reader?.close();
+//                     initReader();
+//                     setTimeout(() => {
+//                         hideOverlay();
+//                         // Capture wieder aktivieren
+//                         setButtonState(captureBtn, true);
+//                         setButtonState(recordBtn, true);
+//                         updateRecordButton();
+//                     }, 2000);
+//                 } else {
+//                     setButtonState(captureBtn, false);
+//                     updateRecordButton();
+//                 }
+//             }
+//             startStatusLongPolling();
+//         })
+//         .catch(err => {
+//             // Don't log abort / load failed error to console, since this is a normal behaviour when using long polls (i.e. on page refresh)
+//             if (
+//                 err.name === "AbortError" ||
+//                 err.message === "Load failed"
+//             ) {
+//                 // still & expected
+//                 setTimeout(startStatusLongPolling, 1000);
+//                 return;
+//             }
 
-            console.error("Status poll failed:", err);
-            setTimeout(startStatusLongPolling, 1500);
-        });
-}
+//             console.error("Status poll failed:", err);
+//             setTimeout(startStatusLongPolling, 1500);
+//         });
+// }
 
 /* Helpers */
 function isPlaying(v) {
@@ -448,9 +510,9 @@ function updateRecordButton() {
     }
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-    startStatusLongPolling();
-});
+// document.addEventListener("DOMContentLoaded", () => {
+//     startStatusLongPolling();
+// });
 
 recordBtn.addEventListener("click", () => {
     const captureBtn = document.getElementById("captureButton");

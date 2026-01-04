@@ -6,6 +6,9 @@ from typing import Dict, List, Optional
 from picamera2 import Picamera2
 from camera_object import CameraObject
 
+# Flask-SocketIO Imports
+from flask_socketio import SocketIO, emit, join_room, leave_room
+
 logger = logging.getLogger(__name__)
 
 ####################
@@ -20,6 +23,7 @@ class CameraManager:
         media_upload_folder: str,
         camera_controls_db_path: str,
         camera_profile_folder: str,
+        socketio: SocketIO,
     ):
         """
         :param camera_module_info_path: Path to camera-module-info.json
@@ -27,6 +31,7 @@ class CameraManager:
         :param media_upload_folder: Path to the folder where photos and videos are stored (media gallery)
         :camera_controls_db_path: Path to file storing camera controls parameter, controllable via webui
         :camera_profile_folder: Path to folder storing files of saved camera profiles (.json)
+        :socketio: Flask-SocketIO object used to snyc camera settings
         """
 
         try:
@@ -44,6 +49,7 @@ class CameraManager:
         self.media_upload_folder = media_upload_folder
         self.camera_controls_db_path = camera_controls_db_path
         self.camera_profile_folder = camera_profile_folder
+        self.socketio = socketio
 
         self.connected_cameras: List[dict] = []
         self.cameras: Dict[int, CameraObject] = {}
@@ -141,6 +147,28 @@ class CameraManager:
         self.connected_cameras = updated_cameras
         return updated_cameras
 
+    def _make_state_callback(self, camera):
+        def callback():
+            state = camera.get_state()
+            room = f"camera_{camera.camera_num}"
+            print(f"DEBUG: _make_state_callback, state: {state}, room: {room}")
+            self.socketio.emit(
+                "camera_state",
+                {"camera_num": camera.camera_num, "state": state},
+                room=room,
+            )
+        return callback
+
+    def join_camera_room(self, sid, camera_num):
+        """ SocketIO-Client joins camera room """
+        room = f"camera_{camera_num}"
+        join_room(room, sid=sid)
+
+    def leave_camera_room(self, sid, camera_num):
+        """ SocketIO-Client leaves camera room """
+        room = f"camera_{camera_num}"
+        leave_room(room, sid=sid)
+
     def init_cameras(self):
         """Create CameraObject instances for all connected cameras."""
         self._load_last_config()
@@ -157,6 +185,7 @@ class CameraManager:
                     self.camera_controls_db_path,
                     self.camera_profile_folder,
                 )
+                camera_obj._on_state_changed = self._make_state_callback(camera_obj)
                 self.cameras[cam_info["Num"]] = camera_obj
             except Exception as e:
                 logger.error("Failed to initialize camera %s: %s", cam_info["Num"], e)

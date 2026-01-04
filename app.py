@@ -100,7 +100,8 @@ camera_manager = CameraManager(
     last_config_path=last_config_path,
     media_upload_folder=media_upload_folder,
     camera_controls_db_path=camera_controls_db_path,
-    camera_profile_folder=camera_profile_folder
+    camera_profile_folder=camera_profile_folder,
+    socketio = socketio
 )
 camera_manager.init_cameras()
 
@@ -205,18 +206,69 @@ def handle_message(data):
     logger.info(f"Received message from client {request.sid}: {data}")
     emit("response", {"data": "Message received"}, broadcast=False)
 
-# Client joins camera room
 @socketio.on("join_camera_room")
-def handle_join_camera_room(data):
-    camera_num = data.get("camera_num")
-    if camera_num is not None:
-        room_name = f"camera_{camera_num}"
-        join_room(room_name)
+def on_join_camera(data):
+    camera_num = data["camera_num"]
+    camera_manager.join_camera_room(request.sid, camera_num)
+
+@socketio.on("leave_camera_room")
+def on_leave_camera(data):
+    camera_num = data["camera_num"]
+    camera_manager.leave_camera_room(request.sid, camera_num)
+
+# Client joins camera room
+# @socketio.on("join_camera_room")
+# def handle_join_camera_room(data):
+#     camera_num = data.get("camera_num")
+#     if camera_num is not None:
+#         room_name = f"camera_{camera_num}"
+#         join_room(room_name)
 
         # camera = camera_manager.get_camera(camera_num)
         # if camera:
         #     # send initial active_recording state
         #     emit("camera_status", {"active_recording": camera._state["active_recording"]}, room=room_name)
+
+
+@socketio.on("set_camera_state")
+def handle_set_camera_state(data):
+    """
+    Receive a camera state update from the frontend and apply it via
+    CameraObject.set_state() or set_control() depending on the path.
+    
+    data = {
+        "camera_num": int,
+        "path": str,  # e.g., "hflip" or "controls.ExposureTime"
+        "value": any
+    }
+    """
+    camera_num = data.get("camera_num")
+    path = data.get("path")
+    value = data.get("value")
+
+    print(f"DEBUG: handle_set_camera_state - path={path}, value={value}")
+
+    if camera_num not in camera_manager.cameras:
+        emit("error", {"message": f"Camera {camera_num} not found"})
+        return
+
+    camera = camera_manager.cameras[camera_num]
+
+    if path.startswith("controls."):
+        # controls key
+        control_name = path.split(".", 1)[1]
+        changed = camera.set_control(control_name, value)
+    else:
+        # top-level state key
+        changed = camera.set_state(path, value)
+
+    if changed:
+        # Broadcast updated camera state to all clients in the room
+        emit(
+            "camera_state",
+            {"camera_num": camera_num, "state": camera.get_state()},
+            broadcast=True
+        )
 
 ####################
 # Flask routes - WebUI routes
@@ -468,13 +520,13 @@ def camera(camera_num):
             return render_template('camera_not_found.html', camera_num=camera_num)
 
         live_controls = camera.live_controls
-        last_image = media_gallery_manager.find_last_image_taken()
+        # last_image = media_gallery_manager.find_last_image_taken()
 
         return render_template(
             'camera.html',
             camera=camera.camera_info,
             settings=live_controls,
-            last_image=last_image,
+            # last_image=last_image,
             profiles=get_profiles(),
             mode="desktop"
         )
@@ -658,8 +710,8 @@ def get_camera_profile():
         return jsonify(success=True, camera_profile=camera_profile)
     return jsonify(success=False, camera_profile="")
 
-@app.route('/create_profile_<int:camera_num>', methods=['POST'])
-def create_profile(camera_num):
+@app.route('/save_profile_<int:camera_num>', methods=['POST'])
+def save_profile(camera_num):
     """Create a new camera profile."""
     data = request.json
     filename = data.get("filename")
@@ -668,7 +720,7 @@ def create_profile(camera_num):
         return jsonify({"error": "Filename is required"}), 400
 
     camera = camera_manager.get_camera(camera_num)
-    success = camera.create_profile(filename)
+    success = camera.save_profile(filename)
 
     if success:
         return jsonify({"message": f"Profile '{filename}' created successfully"}), 200
@@ -726,7 +778,7 @@ def load_profile():
 
     camera = camera_manager.get_camera(camera_num)
     if camera:
-        success = camera.load_camera_profile(profile_name)
+        success = camera.load_profile(profile_name)
         if success:
             return jsonify({"message": f"Profile '{profile_name}' loaded successfully"})
         return jsonify({"error": "Failed to load profile"}), 500
