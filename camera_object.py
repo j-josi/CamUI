@@ -16,7 +16,7 @@ import threading
 import subprocess
 import argparse
 
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from datetime import datetime, timedelta
 from threading import Condition
 
@@ -61,6 +61,32 @@ class CameraObject:
     - erzeugt interne State-Events über _on_state_changed()
     """
 
+    # -----------------------------
+    # DEFAULT CONTROLS
+    # -----------------------------
+    DEFAULT_CONTROLS = {
+        "AfMode": 0,
+        "LensPosition": 1.0,
+        "AfRange": 0,
+        "AfSpeed": 0,
+        "ExposureTime": 33000,
+        "AnalogueGain": 1.1228070259094238,
+        "AeEnable": 1,
+        "ExposureValue": 0.0,
+        "AeConstraintMode": 0,
+        "AeExposureMode": 0,
+        "AeMeteringMode": 0,
+        "AeFlickerMode": 0,
+        "AeFlickerPeriod": 100,
+        "AwbEnable": 0,
+        "AwbMode": 0,
+        "Brightness": 0,
+        "Contrast": 1.0,
+        "Saturation": 1.0,
+        "Sharpness": 1.0,
+        "ColourTemperature": 4000,
+    }
+
     # ---------------------------------------------------
     # INIT
     # ---------------------------------------------------
@@ -71,7 +97,7 @@ class CameraObject:
         camera_module_info: Dict,
         upload_folder: str,
         camera_active_profile_path: str,
-        controls_db_path: str,
+        camera_ui_settings_db_path: str,
         profile_folder: str,
     ) -> None:
 
@@ -80,45 +106,42 @@ class CameraObject:
         self.camera_num: int = camera["Num"]
         self.upload_folder = upload_folder
         self.camera_active_profile_path = camera_active_profile_path
-        self.controls_db_path = controls_db_path
+        self.ui_settings_db_path = camera_ui_settings_db_path
         self.profile_folder = profile_folder
-
-        # temp
-        self.camera_profile = {}
-
 
         self.lock = threading.Lock()
 
-        # ------------------------------------------------
-        # Canonical STATE (Single Source of Truth)
-        # ------------------------------------------------
-        self._state: Dict = {
-            "camera_num": self.camera_num,
-            "active_stream": False,
-            "active_recording": False,
-            "active_capture_still": False,
-            "info": {
-                "model": self.camera_info.get("Model"),
-            },
-            "controls": {},
-            "config": {
-                "hflip": False,
-                "vflip": False,
-                "saveRAW": False,
-                "sensor_mode": None,
-                "still_capture_resolution": 0,
-                "recording_resolution": 0,
-                "streaming_resolution": 0,
-            },
+        self.info = {
+            "model": self.camera_info.get("Model"),
+        }
+
+        self.configs = {
+            "hflip": False,
+            "vflip": False,
+            "saveRAW": False,
+            "sensor_mode": None,
+            "still_capture_resolution": 0,
+            "recording_resolution": 0,
+            "streaming_resolution": 0,
+        }
+
+        self.controls = {}
+
+        self.states = {
+            "is_video_streaming": False,
+            "is_video_recording": False,
+            "is_capturing_still_image": False,
         }
 
         # ------------------------------------------------
         # Camera init
         # ------------------------------------------------
         self.picam2 = Picamera2(self.camera_num)
-        self.sensor_modes = self.picam2.sensor_modes
-        self.camera_resolutions = self._generate_camera_resolutions()
-        self.video_resolutions = self._generate_video_resolutions()
+
+        # Hardware-derived capabilities
+        self.sensor_modes_supported = self.picam2.sensor_modes
+        self.still_resolutions_supported = self._generate_still_resolutions_supported()
+        self.video_resolutions_supported = self._generate_video_resolutions_supported()
 
         # ------------------------------------------------
         # Encoders
@@ -142,10 +165,10 @@ class CameraObject:
         # Config & Controls
         # ------------------------------------------------
 
-        # Initialize and sanitize control definitions
-        self.live_controls = self._init_controls_from_db(
-            self.get_ui_controls(),
-            self.controls_db_path,
+        # Initialize and sanitize control definitions for UI / Frontend schema
+        self.ui_settings = self._init_ui_settings_from_db(
+            self._get_picam_control_capabilities(),
+            self.ui_settings_db_path,
         )
 
         # Load last profile (sets state through setters!)
@@ -161,46 +184,87 @@ class CameraObject:
         self.start_streaming()
 
         # Debug information
-        logger.debug("Available Camera Controls: %s", self.get_ui_controls())
-        logger.debug("Available Sensor Modes: %s", self.sensor_modes)
-        logger.debug("Available Resolutions: %s", self.camera_resolutions)
+        logger.debug("Available Camera Controls: %s", self._get_picam_control_capabilities())
+        logger.debug("Available Sensor Modes: %s", self.sensor_modes_supported)
+        logger.debug("Available Resolutions: %s", self.still_resolutions_supported)
 
     # ===================================================
     # STATE API (ONLY mutation entry points)
     # ===================================================
 
-    def set_state(self, key: str, value):
-        if self._state.get(key) == value:
-            return False
-        self._state[key] = value
-        self._on_state_changed()
-        return True
+    def _set_state(self, name: str, value: bool) -> None:
+        """Set a boolean state (internal). Calls _on_state_changed() if changed."""
+        with self.lock:
+            if self.states.get(name) != value:
+                self.states[name] = value
+                self._on_state_changed()
 
-    def set_control(self, name: str, value):
-        current = self._state["controls"].get(name)
-        if current == value:
-            return False
 
-        # Convert value to valid/supported type
-        control_type = type(current) if current is not None else None
-        if control_type is not None:
+    def get_settings(self) -> Dict:
+        return {
+            "info": copy.deepcopy(self.info),
+            "configs": copy.deepcopy(self.configs),
+            "controls": copy.deepcopy(self.controls),
+            "states": copy.deepcopy(self.states),
+        }
+
+    def set_control(self, name: str, value) -> bool:
+        """Set a single camera control (live). Returns True if updated."""
+        with self.lock:
+            current = self.controls.get(name)
+
+            if current == value:
+                return False
+
+            # Convert value to the same type as current
+            control_type = type(current) if current is not None else None
+            if control_type is not None:
+                try:
+                    if control_type is int:
+                        value = int(value)
+                    elif control_type is float:
+                        value = float(value)
+                    elif control_type is bool:
+                        value = bool(value)
+                except ValueError:
+                    logger.warning("Failed to convert value for control %s: %s", name, value)
+
             try:
-                if control_type is int:
-                    value = int(value)
-                elif control_type is float:
-                    value = float(value)
-                elif control_type is bool:
-                    value = bool(value)
-            except ValueError:
-                logger.warning("Failed to convert value for control %s: %s", name, value)
+                self.picam2.set_controls({name: value})
+                self.controls[name] = value
+                self._on_state_changed()
+                return True
+            except Exception as e:
+                logger.error("Failed to set control %s: %s", name, e, exc_info=True)
+                return False
 
-        self.picam2.set_controls({name: value})
-        self._state["controls"][name] = value
-        self._on_state_changed()
-        return True
+    def get_control(self, name: Optional[str] = None):
+        """Get a single live camera control value by name or all controls if name is None."""
+        with self.lock:
+            if name:
+                return copy.deepcopy(self.controls.get(name))
+            return copy.deepcopy(self.controls)
 
-    def get_state(self) -> Dict:
-        return copy.deepcopy(self._state)
+    def set_config(self, name: str, value) -> bool:
+        """Set a single camera configuration parameter. Returns True if updated"""
+        with self.lock:
+            current = self.configs.get(name)
+            if name in self.configs:
+                if current == value:
+                    return False
+                else:
+                    self.configs[name] = value
+                    return True
+            else:
+                logger.warning("Attempted to set unknown config parameter '%s'", name)
+                return False
+
+    def get_config(self, name: Optional[str] = None):
+        """Get a single config value by name or all configs if name is None."""
+        with self.lock:
+            if name:
+                return copy.deepcopy(self.configs.get(name))
+            return copy.deepcopy(self.configs)
 
     def _on_state_changed(self):
         """
@@ -214,11 +278,14 @@ class CameraObject:
     # ===================================================
 
     def _sync_controls_from_camera(self):
+        """Thread-safe: synchronize current camera controls into STATE dictionary."""
         try:
             metadata = self.picam2.capture_metadata()
-            for key in self.picam2.camera_controls:
-                if key in metadata:
-                    self._state["controls"][key] = metadata[key]
+            with self.lock:
+                for key in self.picam2.camera_controls:
+                    if key in metadata:
+                        self.controls[key] = metadata[key]
+            logger.debug("Camera controls synced from hardware: %s", self.controls)
         except Exception as e:
             logger.warning("Control sync failed: %s", e)
 
@@ -226,34 +293,34 @@ class CameraObject:
     # Camera configuration functions
     # ------------------------------------------------------------------
 
-    def get_ui_controls(self) -> Dict:
+    def _get_picam_control_capabilities(self) -> Dict:
         """
         Copy camera controls from picamera2.camera_controls (inherited from
         libcamera) and crop them to reasonable UI ranges.
         """
-        ui_controls: Dict = copy.deepcopy(self.picam2.camera_controls)
+        controls: Dict = copy.deepcopy(self.picam2.camera_controls)
 
-        if "ExposureTime" in ui_controls:
+        if "ExposureTime" in controls:
             min_exposure_time = 100        # microseconds
             max_exposure_time = 100_000    # microseconds
             default_exposure_time = 500
-            ui_controls["ExposureTime"] = (
+            controls["ExposureTime"] = (
                 min_exposure_time,
                 max_exposure_time,
                 default_exposure_time,
             )
 
-        if "ColourTemperature" in ui_controls:
+        if "ColourTemperature" in controls:
             min_color_temp = 100           # Kelvin
             max_color_temp = 10_000        # Kelvin
             default_color_temp = None
-            ui_controls["ColourTemperature"] = (
+            controls["ColourTemperature"] = (
                 min_color_temp,
                 max_color_temp,
                 default_color_temp,
             )
 
-        return ui_controls
+        return controls
 
     def _init_camera_configuration(self):
         self.video_config = self.picam2.create_video_configuration()
@@ -273,27 +340,37 @@ class CameraObject:
             with open(profile_path, "r") as f:
                 profile = json.load(f)
 
-            # Iterate over all top-level keys in the profile
-            for top_key, sub_dict in profile.items():
-                if isinstance(sub_dict, dict):
-                    # Update existing keys in _state
-                    if top_key not in self._state:
-                        self._state[top_key] = {}
-                    for key, value in sub_dict.items():
-                        self._state[top_key][key] = value
+            # Apply all top-level profile sections to matching object attributes
+            for top_key, value in profile.items():
+                if hasattr(self, top_key) and isinstance(value, dict):
+                    target = getattr(self, top_key)
+                    if isinstance(target, dict):
+                        target.update(value)
+                    else:
+                        logger.warning(
+                            "Profile key '%s' exists but is not a dict on CameraObject",
+                            top_key,
+                        )
                 else:
-                    # If the value is not a dict, assign it directly
-                    self._state[top_key] = sub_dict
+                    logger.debug(
+                        "Ignoring unknown or invalid profile key '%s'", top_key
+                    )
 
-            # Reconfigure video pipeline and sync controls after loading
+            # Reconfigure pipeline and sync controls after loading profile
             self.reconfigure_video_pipeline()
-            self.sync_live_controls()
+            self.sync_ui_settings()
             self._update_active_profile(profile_filename)
+
             logger.info("Camera profile '%s' loaded successfully", profile_filename)
             return True
 
         except Exception as e:
-            logger.error("Error loading camera profile '%s': %s", profile_filename, e, exc_info=True)
+            logger.error(
+                "Error loading camera profile '%s': %s",
+                profile_filename,
+                e,
+                exc_info=True,
+            )
             return False
 
     def load_active_profile(self) -> None:
@@ -312,12 +389,12 @@ class CameraObject:
                 filename = filename[:-5]
 
             profile_path = os.path.join(self.profile_folder, f"{filename}.json")
-            state = self.get_state()
+            # state = self.get_settings()
 
             profile = {
-                "info": dict(self._state.get("info", {})),
-                "config": dict(self._state.get("config", {})),
-                "controls": dict(self._state.get("controls", {})),
+                "info": dict(self.info),
+                "config": dict(self.configs),
+                "controls": dict(self.controls),
             }
 
             with open(profile_path, "w") as f:
@@ -375,19 +452,19 @@ class CameraObject:
 
     #     return self.camera_profile
 
-    def _init_controls_from_db(
+    def _init_ui_settings_from_db(
         self,
         picamera2_controls: Dict,
-        controls_db_path: str,
+        ui_settings_db_path: str,
     ) -> Dict:
-        if os.path.isfile(controls_db_path):
+        if os.path.isfile(ui_settings_db_path):
             try:
-                with open(controls_db_path, "r") as f:
+                with open(ui_settings_db_path, "r") as f:
                     cam_ctrl_json = json.load(f)
             except Exception as e:
                 logger.error(
                     "Failed to extract JSON data from '%s': %s",
-                    controls_db_path,
+                    ui_settings_db_path,
                     e,
                     exc_info=True,
                 )
@@ -397,11 +474,8 @@ class CameraObject:
                 logger.error("'sections' key not found in cam_ctrl_json!")
                 return cam_ctrl_json
         else:
-            logger.error("Controls DB file does not exist: %s", controls_db_path)
+            logger.error("Controls DB file does not exist: %s", ui_settings_db_path)
             return {}
-
-        # Initialize empty controls in camera_profile
-        self.camera_profile["controls"] = {}
 
         for section in cam_ctrl_json["sections"]:
             if "settings" not in section:
@@ -442,9 +516,6 @@ class CameraObject:
                         else:
                             default_val = False if isinstance(min_val, bool) else min_val
 
-                        if setting.get("enabled"):
-                            self.camera_profile["controls"][setting_id] = default_val
-
                         setting["enabled"] = original_enabled
 
                         if original_enabled:
@@ -456,14 +527,14 @@ class CameraObject:
                         )
                         setting["enabled"] = False
 
-                elif source == "generatedresolutions":
+                elif source == "still_resolutions_supported":
                     resolution_options = [
                         {
                             "value": i,
                             "label": f"{w} x {h}",
                             "enabled": True,
                         }
-                        for i, (w, h) in enumerate(self.camera_resolutions)
+                        for i, (w, h) in enumerate(self.still_resolutions_supported)
                     ]
                     setting["options"] = resolution_options
                     section_enabled = True
@@ -473,14 +544,14 @@ class CameraObject:
                         setting_id,
                     )
 
-                elif source == "video_resolutions":
+                elif source == "video_resolutions_supported":
                     resolution_options = [
                         {
                             "value": i,
                             "label": f"{w} x {h}",
                             "enabled": True,
                         }
-                        for i, (w, h) in enumerate(self.video_resolutions)
+                        for i, (w, h) in enumerate(self.video_resolutions_supported)
                     ]
                     setting["options"] = resolution_options
                     section_enabled = True
@@ -514,10 +585,6 @@ class CameraObject:
                             child["min"] = min_val
                             child["max"] = max_val
 
-                            self.camera_profile["controls"][child_id] = (
-                                default_val if default_val is not None else min_val
-                            )
-
                             if default_val is not None:
                                 child["default"] = default_val
 
@@ -535,7 +602,6 @@ class CameraObject:
 
         logger.debug(
             "Initialized camera_profile controls: %s",
-            self.camera_profile,
         )
         return cam_ctrl_json
 
@@ -553,7 +619,7 @@ class CameraObject:
     #             logger.info("Applied setting: %s -> %s", setting_id, setting_value)
 
     #         elif setting_id in ("still_capture_resolution", "recording_resolution", "streaming_resolution"):
-    #             self._state["config"][setting_id] = int(setting_value)
+    #             self.configs[setting_id] = int(setting_value)
     #             if setting_id in ("recording_resolution", "streaming_resolution") and not init:
     #                 self.reconfigure_video_pipeline()
     #             logger.info("Applied resolution %s -> %s", setting_id, setting_value)
@@ -575,45 +641,52 @@ class CameraObject:
     #             self.set_control(setting_id, setting_value)
     #             logger.info("Applied control %s -> %s", setting_id, setting_value)
 
-    #         self.sync_live_controls()
+    #         self.sync_ui_settings()
     #         return setting_value
 
     #     except Exception as e:
     #         logger.error("Error updating setting '%s' with value '%s': %s", setting_id, setting_value, e)
     #         return None
 
-    def sync_live_controls(self) -> None:
-        """Sync live_controls with STATE controls."""
-        for section in self.live_controls.get("sections", []):
+    def sync_ui_settings(self) -> None:
+        """Sync ui_settings with current camera controls and camera configs."""
+        for section in self.ui_settings.get("sections", []):
             for setting in section.get("settings", []):
-                setting_id = setting["id"]
-                if setting_id in self._state["controls"]:
-                    setting["value"] = self._state["controls"][setting_id]
+                setting_id = setting.get("id")
+                if setting_id in self.controls:
+                    setting["value"] = self.controls[setting_id]
+                elif setting_id in self.configs:
+                    setting["value"] = self.configs[setting_id]
 
                 for child in setting.get("childsettings", []):
-                    child_id = child["id"]
-                    if child_id in self._state["controls"]:
-                        child["value"] = self._state["controls"][child_id]
+                    child_id = child.get("id")
+                    if child_id in self.controls:
+                        child["value"] = self.controls[child_id]
+                    elif child_id in self.configs:
+                        child["value"] = self.cofigs[child_id]
 
-        logger.debug("Live controls synced with STATE")
+        logger.debug("Live controls synced with current controls")
 
-    def apply_state_controls(self):
-        """Apply all controls from STATE to the actual camera."""
-        controls = self._state.get("controls", {})
-        try:
-            for ctrl, val in controls.items():
-                self.picam2.set_controls({ctrl: val})
-                logger.debug("Applied control from STATE: %s -> %s", ctrl, val)
+    def apply_controls(self):
+        """Thread-safe: apply all current controls (self.controls) to the camera hardware.
+        To apply a camera (live) control parameter, no restart of the camera (Picamera2) recording is necessary."""
+        with self.lock:
+            try:
+                self.picam2.set_controls(self.controls)
+                logger.debug("Applied controls to hardware: %s", self.controls)
+            except Exception as e:
+                logger.error("Error applying profile controls: %s", e, exc_info=True)
+                return False
 
-            self.sync_live_controls()
-            logger.info("All profile controls applied successfully")
-        except Exception as e:
-            logger.error("Error applying profile controls: %s", e, exc_info=True)
+        # Update UI controls outside the lock to avoid blocking
+        self.sync_ui_settings()
+        logger.info("All profile controls applied successfully")
+        return True
 
-    def _generate_video_resolutions(self) -> List:
+    def _generate_video_resolutions_supported(self) -> List[Tuple[int, int]]:
         resolutions = set()
 
-        for mode in self.sensor_modes:
+        for mode in self.sensor_modes_supported:
             sw, sh = mode["size"]
 
             for w, h in [
@@ -638,7 +711,7 @@ class CameraObject:
 
         candidates = [
             mode
-            for mode in self.sensor_modes
+            for mode in self.sensor_modes_supported
             if mode["size"][0] >= tw and mode["size"][1] >= th
         ]
 
@@ -649,18 +722,18 @@ class CameraObject:
         return min(candidates, key=lambda m: m["size"][0] * m["size"][1])
 
     def reconfigure_video_pipeline(self) -> bool:
-        """Reconfigure video pipeline based on current STATE."""
-        if self._state["active_recording"] or self._state["active_capture_still"]:
+        """Reconfigure video pipeline based on current (camera) configs."""
+        if self.states["is_video_recording"] or self.states["is_capturing_still_image"]:
             return False
 
-        rec = self.video_resolutions[self._state["config"]["recording_resolution"]]
-        stream = self.video_resolutions[self._state["config"]["streaming_resolution"]]
+        rec = self.video_resolutions_supported[self.configs["recording_resolution"]]
+        stream = self.video_resolutions_supported[self.configs["streaming_resolution"]]
 
         main_size, lores_size = (rec, stream) if rec[0]*rec[1] >= stream[0]*stream[1] else (stream, rec)
         self.main_stream, self.lores_stream = ("recording", "streaming") if rec[0]*rec[1] >= stream[0]*stream[1] else ("streaming", "recording")
 
         mode = self._find_best_sensor_mode(main_size)
-        was_streaming = self._state["active_stream"]
+        was_streaming = self.states["is_video_streaming"]
         if was_streaming:
             self.stop_streaming()
 
@@ -669,7 +742,7 @@ class CameraObject:
             self.picam2.configure(self.picam2.create_video_configuration(
                 main={"size": main_size},
                 lores={"size": lores_size},
-                transform=Transform(hflip=self._state["config"]["hflip"], vflip=self._state["config"]["vflip"]),
+                transform=Transform(hflip=self.configs["hflip"], vflip=self.configs["vflip"]),
                 sensor={"output_size": mode["size"], "bit_depth": mode["bit_depth"]}
             ))
             self.picam2.start()
@@ -677,7 +750,7 @@ class CameraObject:
         if was_streaming:
             self.start_streaming()
 
-        self._state["config"]["sensor_mode"] = self.sensor_modes.index(mode)
+        self.configs["sensor_mode"] = self.sensor_modes_supported.index(mode)
         logger.info("Video pipeline reconfigured: main=%s lores=%s", main_size, lores_size)
         return True
 
@@ -688,61 +761,54 @@ class CameraObject:
         return "main" if self.main_stream == "streaming" else "lores"
 
     def get_recording_resolution(self) -> tuple:
-        return self.video_resolutions[self._state["config"]["recording_resolution"]]
+        return self.video_resolutions_supported[self.configs["recording_resolution"]]
 
     def get_streaming_resolution(self) -> tuple:
-        return self.video_resolutions[self._state["config"]["streaming_resolution"]]
+        return self.video_resolutions_supported[self.configs["streaming_resolution"]]
 
     def set_recording_resolution(self, resolution_index: int) -> None:
-        self._state["config"]["recording_resolution"] = int(resolution_index)
+        self.configs["recording_resolution"] = int(resolution_index)
         self.reconfigure_video_pipeline()
 
     def set_streaming_resolution(self, resolution_index: int) -> None:
-        self._state["config"]["streaming_resolution"] = int(resolution_index)
+        self.configs["streaming_resolution"] = int(resolution_index)
         self.reconfigure_video_pipeline()
 
     def reset_to_default(self) -> bool:
-        # TODO: fix this function for websocket
-        """Reset camera settings to default STATE and apply them."""
-        self._state.update({
-            "config": {
-                "hflip": False,
-                "vflip": False,
-                "saveRAW": False,
-                "sensor_mode": None,
-                "still_capture_resolution": 0,
-                "recording_resolution": 0,
-                "streaming_resolution": 0,
-            },
-            "controls": {
-                "AfMode": 0,
-                "LensPosition": 1.0,
-                "AfRange": 0,
-                "AfSpeed": 0,
-                "ExposureTime": 33000,
-                "AnalogueGain": 1.1228070259094238,
-                "AeEnable": 1,
-                "ExposureValue": 0.0,
-                "AeConstraintMode": 0,
-                "AeExposureMode": 0,
-                "AeMeteringMode": 0,
-                "AeFlickerMode": 0,
-                "AeFlickerPeriod": 100,
-                "AwbEnable": 0,
-                "AwbMode": 0,
-                "Brightness": 0,
-                "Contrast": 1.0,
-                "Saturation": 1.0,
-                "Sharpness": 1.0,
-                "ColourTemperature": 4000,
-            },
-        })
+        """Reset camera configuration and controls to default values and apply them."""
 
-        # self.apply_state_controls()
-        self.reconfigure_video_pipeline()
-        # self.update_settings("saveRAW", self._state["saveRAW"])
-        logger.info("Camera STATE reset to default and settings applied")
+        # --- 1. Reset persistent configuration ---
+        self.configs.update({
+            "hflip": False,
+            "vflip": False,
+            "saveRAW": False,
+            "sensor_mode": 0,  # Setze explizit ersten Modus
+            "still_capture_resolution": 0,
+            "recording_resolution": 0,
+            "streaming_resolution": 0,
+        })
+        logger.debug("Reset config to defaults: %s", self.configs)
+
+        # --- 2. Reset all camera controls to known defaults ---
+        self.controls.clear()
+        self.controls.update(DEFAULT_CONTROLS)
+        logger.debug("Reset controls to defaults: %s", self.controls)
+
+        # --- 3. Reconfigure video pipeline based on defaults ---
+        if not self.reconfigure_video_pipeline():
+            logger.warning("Failed to reconfigure video pipeline during reset")
+
+        # --- 4. Apply control defaults to camera hardware ---
+        try:
+            self.apply_controls()
+        except Exception as e:
+            logger.error("Failed to apply default camera controls: %s", e, exc_info=True)
+            return False
+
+        logger.info("Camera successfully reset to default configuration and controls")
         return True
+
+
 
     #-----
     # Camera Information Functions
@@ -771,7 +837,7 @@ class CameraObject:
             current_config = self.picam2.camera_configuration()
             active_mode = current_config.get("sensor", {})
 
-            for index, mode in enumerate(self.sensor_modes):
+            for index, mode in enumerate(self.sensor_modes_supported):
                 if (
                     mode["size"] == active_mode.get("output_size")
                     and mode["bit_depth"] == active_mode.get("bit_depth")
@@ -786,14 +852,14 @@ class CameraObject:
             logger.error("Error retrieving sensor mode: %s", e, exc_info=True)
             return None
 
-    def _generate_camera_resolutions(self) -> List[tuple]:
+    def _generate_still_resolutions_supported(self) -> List[tuple]:
         """Precompute available resolutions based on sensor modes."""
-        if not self.sensor_modes:
+        if not self.sensor_modes_supported:
             logger.warning("No sensor modes available!")
             return []
 
         resolutions = sorted(
-            set(mode["size"] for mode in self.sensor_modes if "size" in mode),
+            set(mode["size"] for mode in self.sensor_modes_supported if "size" in mode),
             reverse=True,
         )
 
@@ -824,7 +890,7 @@ class CameraObject:
 
     def start_streaming(self):
         with self.lock:
-            if self._state["active_stream"]:
+            if self.states["is_video_streaming"]:
                 logger.info("Skip starting stream, already active")
                 return
 
@@ -834,22 +900,23 @@ class CameraObject:
                 output=self.output_stream,
                 name=stream_name,
             )
-            self.set_state("active_stream", True)
-            logger.info("Streaming started on '%s' stream", stream_name)
+        self._set_state("is_video_streaming", True)
+        logger.info("Streaming started on '%s' stream", stream_name)
 
     def stop_streaming(self):
         with self.lock:
-            if not self._state["active_stream"]:
+            if not self.states["is_video_streaming"]:
                 logger.info("Skip stopping stream, no active stream")
                 return
 
             self.picam2.stop_recording()
-            self.set_state("active_stream", False)
-            logger.info("Streaming stopped")
+        
+        self._set_state("is_video_streaming", False)
+        logger.info("Streaming stopped")
 
     def start_recording(self, filename: str):
         with self.lock:
-            if self._state["active_recording"]:
+            if self.states["is_video_recording"]:
                 logger.info("Skip starting recording, already active")
                 return False, None
 
@@ -864,13 +931,14 @@ class CameraObject:
 
             self.output_recording = output
             self.filename_recording = filename
-            self.set_state("active_recording", True)
-            logger.info(f"Recording {filename} started")
-            return True, filename
+
+        self._set_state("is_video_recording", True)
+        logger.info(f"Recording {filename} started")
+        return True, filename
 
     def stop_recording(self):
         with self.lock:
-            if not self._state["active_recording"]:
+            if not self.states["is_video_recording"]:
                 logger.info("Skip stopping recording, no active recording")
                 return False
 
@@ -880,8 +948,9 @@ class CameraObject:
             self.picam2.stop_recording()
             self.output_recording = None
             self.filename_recording = None
-            self.set_state("active_recording", False)
-            logger.info(f"Recording {_filename} stopped")
+
+        self._set_state("is_video_recording", False)
+        logger.info(f"Recording {_filename} stopped")
 
         return True
 
@@ -890,25 +959,26 @@ class CameraObject:
     #-----
     def capture_still(self, filename: str, raw: bool = False) -> Optional[str]:
         filepath = os.path.join(self.upload_folder, filename)
+        sucess = False
 
         # Sperre gleich zu Beginn für alle _state-Zugriffe
         with self.lock:
-            if self._state["active_capture_still"]:
+            if self.states["is_capturing_still_image"]:
                 logger.warning(
                     "Skip capturing still image '%s', another capture is active", filename
                 )
                 return None
             # Markiere Capture als aktiv
-            self._state["active_capture_still"] = True
-            was_streaming = self._state["active_stream"]
+            self.states["is_capturing_still_image"] = True
+            was_streaming = self.states["is_video_streaming"]
 
         try:
             # Auflösungen ermitteln
-            still_index = self._state["config"]["still_capture_resolution"]
-            still_resolution = self.camera_resolutions[still_index]
+            still_index = self.configs["still_capture_resolution"]
+            still_resolution = self.still_resolutions_supported[still_index]
 
-            rec_index = self._state["config"]["recording_resolution"]
-            recording_resolution = self.video_resolutions[rec_index]
+            rec_index = self.configs["recording_resolution"]
+            recording_resolution = self.video_resolutions_supported[rec_index]
 
             if still_resolution[0] * still_resolution[1] >= recording_resolution[0] * recording_resolution[1]:
                 mode = self._find_best_sensor_mode(still_resolution)
@@ -930,7 +1000,7 @@ class CameraObject:
             with self.lock:
                 self.picam2.stop()
                 self.picam2.configure(still_config)
-                self._state["config"]["sensor_mode"] = self.sensor_modes.index(mode)
+                self.configs["sensor_mode"] = self.sensor_modes_supported.index(mode)
                 self.picam2.start()
 
             # Aufnahme durchführen
@@ -955,20 +1025,26 @@ class CameraObject:
                 )
 
             logger.info("Successfully captured image '%s'", filepath)
-            return filepath
+            success = True
 
         except Exception as e:
             logger.error("Error capturing still image '%s': %s", filepath, e, exc_info=True)
-            return None
 
         finally:
             # Lock nur für _state-Update verwenden
             with self.lock:
-                self._state["active_capture_still"] = False
+                self.states["is_capturing_still_image"] = False
 
+            self.reconfigure_video_pipeline()
+            
             # Streaming außerhalb des Locks starten (kann blockieren)
             if was_streaming:
                 self.start_streaming()
+            
+            if success:
+                return filepath
+            else:
+                return None
 
     def capture_still_from_feed(self, filename: str) -> Optional[str]:
         try:

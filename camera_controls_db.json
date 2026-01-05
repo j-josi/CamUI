@@ -351,7 +351,7 @@
         {
           "name": "Still Capture Resolution",
           "id": "still_capture_resolution",
-          "source": "generatedresolutions",
+          "source": "still_resolutions_supported",
           "info": "Sets the resolution used when capturing a still image, independent of the sensor mode.",
           "type": "radio",
           "enabled": true,

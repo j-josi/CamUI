@@ -3,7 +3,7 @@
     "vflip": 0,
     "model": "imx708",
     "resolutions": {
-        "StillCaptureResolution": 0,
+        "still_capture_resolution": 0,
         "recording_resolution": 0,
         "streaming_resolution": 0
     },

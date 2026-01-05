@@ -21,7 +21,7 @@ class CameraManager:
         camera_module_info_path: str,
         camera_active_profile_path: str,
         media_upload_folder: str,
-        camera_controls_db_path: str,
+        camera_ui_settings_db_path: str,
         camera_profile_folder: str,
         socketio: SocketIO,
     ):
@@ -29,7 +29,7 @@ class CameraManager:
         :param camera_module_info_path: Path to camera-module-info.json
         :param camera_active_profile_path: Path to camera-active-profile.json
         :param media_upload_folder: Path to the folder where photos and videos are stored (media gallery)
-        :camera_controls_db_path: Path to file storing camera controls parameter, controllable via webui
+        :camera_ui_settings_db_path: Path to file storing camera controls parameter, controllable via webui
         :camera_profile_folder: Path to folder storing files of saved camera profiles (.json)
         :socketio: Flask-SocketIO object used to snyc camera settings
         """
@@ -47,7 +47,7 @@ class CameraManager:
 
         self.camera_active_profile_path = camera_active_profile_path
         self.media_upload_folder = media_upload_folder
-        self.camera_controls_db_path = camera_controls_db_path
+        self.camera_ui_settings_db_path = camera_ui_settings_db_path
         self.camera_profile_folder = camera_profile_folder
         self.socketio = socketio
 
@@ -148,7 +148,7 @@ class CameraManager:
 
     def _make_state_callback(self, camera):
         def callback():
-            state = camera.get_state()
+            state = camera.get_settings()
             room = f"camera_{camera.camera_num}"
             # print(f"DEBUG: _make_state_callback, state: {state}, room: {room}")
             self.socketio.emit(
@@ -181,7 +181,7 @@ class CameraManager:
                     self.camera_module_info,
                     self.media_upload_folder,
                     self.camera_active_profile_path,
-                    self.camera_controls_db_path,
+                    self.camera_ui_settings_db_path,
                     self.camera_profile_folder,
                 )
                 camera_obj._on_state_changed = self._make_state_callback(camera_obj)

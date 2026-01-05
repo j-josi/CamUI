@@ -77,7 +77,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 
 camera_active_profile_path = os.path.join(current_dir, 'camera-active-profile.json')
 camera_module_info_path = os.path.join(current_dir, 'camera-module-info.json')
-camera_controls_db_path = os.path.join(current_dir, 'camera_controls_db.json')
+camera_ui_settings_db_path = os.path.join(current_dir, 'camera_controls_db.json')
 camera_profile_folder = os.path.join(current_dir, 'static/camera_profiles')
 
 app.config['camera_profile_folder'] = camera_profile_folder
@@ -99,7 +99,7 @@ camera_manager = CameraManager(
     camera_module_info_path=camera_module_info_path,
     camera_active_profile_path=camera_active_profile_path,
     media_upload_folder=media_upload_folder,
-    camera_controls_db_path=camera_controls_db_path,
+    camera_ui_settings_db_path=camera_ui_settings_db_path,
     camera_profile_folder=camera_profile_folder,
     socketio = socketio
 )
@@ -227,11 +227,11 @@ def on_leave_camera(data):
         # camera = camera_manager.get_camera(camera_num)
         # if camera:
         #     # send initial active_recording state
-        #     emit("camera_status", {"active_recording": camera._state["active_recording"]}, room=room_name)
+        #     emit("camera_status", {"active_recording": camera.states["is_video_recording"]}, room=room_name)
 
 
-@socketio.on("set_camera_state")
-def handle_set_camera_state(data):
+@socketio.on("set_camera_setting")
+def handle_set_camera_setting(data):
     """
     Receive a camera state update from the frontend and apply it via
     CameraObject.set_state() or set_control() depending on the path.
@@ -246,7 +246,7 @@ def handle_set_camera_state(data):
     path = data.get("path")
     value = data.get("value")
 
-    # print(f"DEBUG: handle_set_camera_state - path={path}, value={value}")
+    print(f"DEBUG: handle_set_camera_setting - path={path}, value={value}")
 
     if camera_num not in camera_manager.cameras:
         emit("error", {"message": f"Camera {camera_num} not found"})
@@ -254,19 +254,24 @@ def handle_set_camera_state(data):
 
     camera = camera_manager.cameras[camera_num]
 
+    changed = False
+
     if path.startswith("controls."):
         # controls key
         control_name = path.split(".", 1)[1]
         changed = camera.set_control(control_name, value)
+    elif path.startswith("configs."):
+        # configs key
+        config_name = path.split(".", 1)[1]
+        changed = camera.set_config(config_name, value)
     else:
-        # top-level state key
-        changed = camera.set_state(path, value)
+        logger.info(f"unsupported top-level camera setting key '{path.split(".", 1)[1]}' for function handle_set_camera_setting -> skipped to set camera setting")
 
     if changed:
         # Broadcast updated camera state to all clients in the room
         emit(
             "camera_state",
-            {"camera_num": camera_num, "state": camera.get_state()},
+            {"camera_num": camera_num, "state": camera.get_settings()},
             broadcast=True
         )
 
@@ -314,30 +319,30 @@ def camera_info(camera_num):
     camera_module_spec = camera.get_camera_module_spec()
     return render_template('camera_info.html', camera_data=camera_module_spec, camera_num=camera_num)
 
-@app.route("/camera_status_long/<int:camera_num>")
-def camera_status_long(camera_num):
-    """
-    Long polling endpoint for camera recording status.
-    Returns immediately if status changes, otherwise waits up to 15s.
-    """
-    try:
-        camera = camera_manager.get_camera(camera_num)
-        if not camera:
-            return jsonify(success=False, error="Camera not found"), 404
+# @app.route("/camera_status_long/<int:camera_num>")
+# def camera_status_long(camera_num):
+#     """
+#     Long polling endpoint for camera recording status.
+#     Returns immediately if status changes, otherwise waits up to 15s.
+#     """
+#     try:
+#         camera = camera_manager.get_camera(camera_num)
+#         if not camera:
+#             return jsonify(success=False, error="Camera not found"), 404
 
-        last_state = request.args.get("state", "false") == "true"
-        timeout = 15
-        start = time.time()
+#         last_state = request.args.get("state", "false") == "true"
+#         timeout = 15
+#         start = time.time()
 
-        while time.time() - start < timeout:
-            if camera._state["active_recording"] != last_state:
-                return jsonify(success=True, active_recording=camera._state["active_recording"])
-            time.sleep(0.2)
+#         while time.time() - start < timeout:
+#             if camera.states["is_video_recording"] != last_state:
+#                 return jsonify(success=True, active_recording=camera.states["is_video_recording"])
+#             time.sleep(0.2)
 
-        return jsonify(success=True, active_recording=camera._state["active_recording"])
+#         return jsonify(success=True, active_recording=camera.states["is_video_recording"])
 
-    except Exception as e:
-        return jsonify(success=False, error=str(e)), 500
+#     except Exception as e:
+#         return jsonify(success=False, error=str(e)), 500
 
 @app.route("/about")
 def about():
@@ -519,13 +524,12 @@ def camera(camera_num):
         if not camera:
             return render_template('camera_not_found.html', camera_num=camera_num)
 
-        live_controls = camera.live_controls
         # last_image = media_gallery_manager.find_last_image_taken()
 
         return render_template(
             'camera.html',
             camera=camera.camera_info,
-            settings=live_controls,
+            settings=camera.ui_settings,
             # last_image=last_image,
             profiles=get_profiles(),
             mode="desktop"
@@ -549,8 +553,7 @@ def capture_still(camera_num):
         image_filename = generate_filename(camera_manager, camera_num, ".jpg")
         logging.debug(f"📁 New image filename: {image_filename}")
 
-        success = camera.capture_still(image_filename, camera.camera_profile["saveRAW"])
-        camera.reconfigure_video_pipeline()
+        success = camera.capture_still(image_filename, camera.configs["saveRAW"])
 
         if success:
             return jsonify(success=True, message="Still image captured successfully", image=image_filename)
@@ -626,7 +629,7 @@ def stop_recording(camera_num):
         return jsonify(success=False, error="Invalid camera number"), 400
 
     # save if stream was active on function call
-    was_streaming = camera._state["active_stream"]
+    was_streaming = camera.states["is_video_streaming"]
     success = camera.stop_recording()
 
     room_name = f"camera_{camera_num}"
@@ -635,7 +638,7 @@ def stop_recording(camera_num):
 
     # start streaming again, if stream was active on function call
     if was_streaming:
-        camera._state["active_stream"] = False
+        camera.states["is_video_streaming"] = False
         camera.start_streaming()
 
     message = f"Recording of file {camera.filename_recording} stopped successfully" if success else "Failed to stop recording"
@@ -700,15 +703,15 @@ def set_streaming_resolution():
 # Camera Profile routes
 ####################
 
-@app.route("/get_camera_profile", methods=["GET"])
-def get_camera_profile():
-    """Fetch the current camera profile for a given camera."""
-    camera_num = request.args.get("camera_num", type=int)
-    camera = camera_manager.get_camera(camera_num)
-    if camera:
-        camera_profile = camera.camera_profile
-        return jsonify(success=True, camera_profile=camera_profile)
-    return jsonify(success=False, camera_profile="")
+# @app.route("/get_camera_profile", methods=["GET"])
+# def get_camera_profile():
+#     """Fetch the current camera profile for a given camera."""
+#     camera_num = request.args.get("camera_num", type=int)
+#     camera = camera_manager.get_camera(camera_num)
+#     if camera:
+#         camera_profile = camera.camera_profile
+#         return jsonify(success=True, camera_profile=camera_profile)
+#     return jsonify(success=False, camera_profile="")
 
 @app.route('/save_profile_<int:camera_num>', methods=['POST'])
 def save_profile(camera_num):
@@ -814,7 +817,7 @@ def get_media_slice():
     active_recordings = []
 
     for key, camera in camera_manager.cameras.items():
-        if camera._state["active_recording"]:
+        if camera.states["is_video_recording"]:
             active_recordings.append(camera.filename_recording)
 
     media_files = media_gallery_manager.get_media_slice(
