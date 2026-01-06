@@ -134,6 +134,7 @@ def get_active_profile():
     return load_or_initialize_config(camera_active_profile_path, minimum_active_config)
 
 def get_profiles():
+    # TODO: move to CameraManager
     profiles = []
     if not os.path.exists(camera_profile_folder):
         os.makedirs(camera_profile_folder)
@@ -263,12 +264,15 @@ def handle_set_camera_setting(data):
     elif path.startswith("configs."):
         # configs key
         config_name = path.split(".", 1)[1]
-        changed = camera.set_config(config_name, value)
+        # temp
+        if config_name not in ["still_capture_resolution", "recording_resolution", streaming_resolution]:
+            changed = camera.set_config(config_name, value)
     else:
         logger.info(f"unsupported top-level camera setting key '{path.split(".", 1)[1]}' for function handle_set_camera_setting -> skipped to set camera setting")
 
     if changed:
         # Broadcast updated camera state to all clients in the room
+        # TODO anpassen auf neue architektur/struktur
         emit(
             "camera_state",
             {"camera_num": camera_num, "state": camera.get_settings()},
@@ -722,8 +726,9 @@ def save_profile(camera_num):
     if not filename:
         return jsonify({"error": "Filename is required"}), 400
 
-    camera = camera_manager.get_camera(camera_num)
-    success = camera.save_profile(filename)
+    # camera = camera_manager.get_camera(camera_num)
+    # success = camera.save_profile(filename)
+    success = camera_manager.save_profile(camera_num, filename)
 
     if success:
         return jsonify({"message": f"Profile '{filename}' created successfully"}), 200
@@ -731,14 +736,16 @@ def save_profile(camera_num):
 
 @app.route("/reset_profile_<int:camera_num>", methods=["POST"])
 def reset_profile(camera_num):
-    """Reset a camera profile to default values."""
-    camera = camera_manager.get_camera(camera_num)
-    if camera and camera.reset_to_default():
+    success = camera_manager.reset_camera_to_defaults(camera_num)
+    if success:
         return jsonify({"success": True, "message": "Profile reset to default values"})
-    return jsonify({"success": False, "message": "Failed to reset profile to default values"}), 404
+    else:
+        return jsonify({"success": False, "message": "Failed to reset profile to default values"}), 500
+    # TODO: create function camera_manager.reset_profile
 
 @app.route("/delete_profile_<int:camera_num>", methods=["POST"])
 def delete_profile(camera_num):
+    # TODO: create function camera_manager.delete_profile
     """Delete a camera profile file."""
     data = request.get_json()
     filename = data.get("filename")
@@ -779,14 +786,11 @@ def load_profile():
     if camera_num is None:
         return jsonify({"error": "Camera number is missing"}), 400
 
-    camera = camera_manager.get_camera(camera_num)
-    if camera:
-        success = camera.load_profile(profile_name)
-        if success:
-            return jsonify({"message": f"Profile '{profile_name}' loaded successfully"})
-        return jsonify({"error": "Failed to load profile"}), 500
+    success = camera_manager.load_profile(camera_num, profile_name)
 
-    return jsonify({"error": "Invalid camera number"}), 400
+    if success:
+        return jsonify({"message": f"Profile '{profile_name}' loaded successfully"})
+    return jsonify({"error": "Failed to load profile"}), 500
 
 @app.route("/get_profiles")
 def _get_profiles():

@@ -16,7 +16,7 @@ import threading
 import subprocess
 import argparse
 
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Union, Any
 from datetime import datetime, timedelta
 from threading import Condition
 
@@ -61,6 +61,9 @@ class CameraObject:
     - erzeugt interne State-Events über _on_state_changed()
     """
 
+    # Registry of all CameraObject instances: {camera_num: CameraObject}
+    cameras: Dict[int, "CameraObject"] = {}
+
     # -----------------------------
     # DEFAULT CONTROLS
     # -----------------------------
@@ -96,22 +99,18 @@ class CameraObject:
         camera: Dict,
         camera_module_info: Dict,
         upload_folder: str,
-        camera_active_profile_path: str,
         camera_ui_settings_db_path: str,
-        profile_folder: str,
     ) -> None:
 
         self.camera_info = camera
         self.camera_module_info = camera_module_info
         self.camera_num: int = camera["Num"]
         self.upload_folder = upload_folder
-        self.camera_active_profile_path = camera_active_profile_path
         self.ui_settings_db_path = camera_ui_settings_db_path
-        self.profile_folder = profile_folder
 
         self.lock = threading.Lock()
 
-        self.info = {
+        self.infos = {
             "model": self.camera_info.get("Model"),
         }
 
@@ -137,6 +136,7 @@ class CameraObject:
         # Camera init
         # ------------------------------------------------
         self.picam2 = Picamera2(self.camera_num)
+        CameraObject.cameras[self.camera_num] = self
 
         # Hardware-derived capabilities
         self.sensor_modes_supported = self.picam2.sensor_modes
@@ -172,7 +172,7 @@ class CameraObject:
         )
 
         # Load last profile (sets state through setters!)
-        self.load_active_profile()
+        # self.load_active_profile()
 
         # Initialize video configuration (stream and recording)
         self.reconfigure_video_pipeline()
@@ -199,43 +199,153 @@ class CameraObject:
                 self.states[name] = value
                 self._on_state_changed()
 
+    def _coerce_control_value(self, name: str, value):
+        """Convert incoming control values to the type expected by Picamera2."""
+        current = self.controls.get(name)
+
+        if current is None:
+            return value
+
+        try:
+            if isinstance(current, bool):
+                return bool(int(value)) if isinstance(value, str) else bool(value)
+            if isinstance(current, int):
+                return int(value)
+            if isinstance(current, float):
+                return float(value)
+        except (ValueError, TypeError):
+            logger.warning(
+                "Failed to coerce control '%s' value '%s' to type %s",
+                name,
+                value,
+                type(current),
+            )
+
+        return value
 
     def get_settings(self) -> Dict:
         return {
-            "info": copy.deepcopy(self.info),
+            "infos": copy.deepcopy(self.infos),
             "configs": copy.deepcopy(self.configs),
             "controls": copy.deepcopy(self.controls),
             "states": copy.deepcopy(self.states),
         }
 
-    def set_control(self, name: str, value) -> bool:
-        """Set a single camera control (live). Returns True if updated."""
-        with self.lock:
-            current = self.controls.get(name)
+    # def set_control(self, name: str, value) -> bool:
+    #     """Set a single camera control (live). Returns True if updated."""
+    #     with self.lock:
+    #         current = self.controls.get(name)
 
-            if current == value:
+    #         if current == value:
+    #             return False
+
+    #         # Convert value to the same type as current
+    #         control_type = type(current) if current is not None else None
+    #         if control_type is not None:
+    #             try:
+    #                 if control_type is int:
+    #                     value = int(value)
+    #                 elif control_type is float:
+    #                     value = float(value)
+    #                 elif control_type is bool:
+    #                     value = bool(value)
+    #             except ValueError:
+    #                 logger.warning("Failed to convert value for control %s: %s", name, value)
+
+    #         try:
+    #             self.picam2.set_controls({name: value})
+    #             self.controls[name] = value
+    #             self._on_state_changed()
+    #             return True
+    #         except Exception as e:
+    #             logger.error("Failed to set control %s: %s", name, e, exc_info=True)
+    #             return False
+    
+    def set_control(self, name, value=None) -> bool:
+        """
+        Set camera control(s).
+
+        - set_control("ExposureTime", 30000)
+        - set_control({ "ExposureTime": 30000, "AnalogueGain": 2.0 })
+
+        Returns True if at least one control was updated.
+        """
+
+        # -----------------------------
+        # BULK MODE
+        # -----------------------------
+        if isinstance(name, dict):
+            updated = False
+            controls_to_apply = {}
+
+            with self.lock:
+                for ctrl_name, raw_value in name.items():
+                    if ctrl_name not in self.controls:
+                        logger.warning(
+                            "Attempted to set unknown camera control '%s'", ctrl_name
+                        )
+                        continue
+
+                    coerced = self._coerce_control_value(ctrl_name, raw_value)
+                    current = self.controls.get(ctrl_name)
+
+                    # Skip if value is unchanged
+                    if current == coerced:
+                        continue
+
+                    controls_to_apply[ctrl_name] = coerced
+
+                if not controls_to_apply:
+                    return False
+
+                try:
+                    self.picam2.set_controls(controls_to_apply)
+                    self.controls.update(controls_to_apply)
+                    updated = True
+                except Exception as exc:
+                    logger.error(
+                        "Failed to apply bulk camera controls %s: %s",
+                        controls_to_apply,
+                        exc,
+                        exc_info=True,
+                    )
+                    return False
+
+            if updated:
+                self._on_state_changed()
+
+            return updated
+
+        # -----------------------------
+        # SINGLE MODE
+        # -----------------------------
+        if not isinstance(name, str):
+            raise TypeError("set_control expects str or dict")
+
+        with self.lock:
+            if name not in self.controls:
+                logger.warning("Attempted to set unknown camera control '%s'", name)
                 return False
 
-            # Convert value to the same type as current
-            control_type = type(current) if current is not None else None
-            if control_type is not None:
-                try:
-                    if control_type is int:
-                        value = int(value)
-                    elif control_type is float:
-                        value = float(value)
-                    elif control_type is bool:
-                        value = bool(value)
-                except ValueError:
-                    logger.warning("Failed to convert value for control %s: %s", name, value)
+            coerced = self._coerce_control_value(name, value)
+            current = self.controls.get(name)
+
+            if current == coerced:
+                return False
 
             try:
-                self.picam2.set_controls({name: value})
-                self.controls[name] = value
+                self.picam2.set_controls({name: coerced})
+                self.controls[name] = coerced
                 self._on_state_changed()
                 return True
-            except Exception as e:
-                logger.error("Failed to set control %s: %s", name, e, exc_info=True)
+            except Exception as exc:
+                logger.error(
+                    "Failed to set control %s=%s: %s",
+                    name,
+                    coerced,
+                    exc,
+                    exc_info=True,
+                )
                 return False
 
     def get_control(self, name: Optional[str] = None):
@@ -245,19 +355,59 @@ class CameraObject:
                 return copy.deepcopy(self.controls.get(name))
             return copy.deepcopy(self.controls)
 
-    def set_config(self, name: str, value) -> bool:
-        """Set a single camera configuration parameter. Returns True if updated"""
+    # def set_config(self, name: str, value) -> bool:
+    #     """Set a single camera configuration parameter. Returns True if updated"""
+    #     with self.lock:
+    #         current = self.configs.get(name)
+    #         if name in self.configs:
+    #             if current == value:
+    #                 return False
+    #             else:
+    #                 self.configs[name] = value
+    #                 return True
+    #         else:
+    #             logger.warning("Attempted to set unknown config parameter '%s'", name)
+    #             return False
+
+    def set_config(self, name: Union[str, Dict[str, Any]], value=None) -> bool:
+        """
+        Set camera config(s).
+
+        - set_config("hflip", True)
+        - set_config({ "hflip": False, "vflip": False })
+
+        Returns True if at least one config value was updated.
+        """
+        # ---------- BULK MODE ----------
+        if isinstance(name, dict):
+            updated = False
+
+            with self.lock:
+                for key, val in name.items():
+                    if key not in self.configs:
+                        logger.warning("Unknown config parameter '%s', skipping", key)
+                        continue
+
+                    if self.configs.get(key) != val:
+                        self.configs[key] = val
+                        updated = True
+
+            return updated
+
+        # ---------- SINGLE MODE ----------
+        if not isinstance(name, str):
+            raise TypeError("set_config expects str or dict")
+
         with self.lock:
-            current = self.configs.get(name)
-            if name in self.configs:
-                if current == value:
-                    return False
-                else:
-                    self.configs[name] = value
-                    return True
-            else:
+            if name not in self.configs:
                 logger.warning("Attempted to set unknown config parameter '%s'", name)
                 return False
+
+            if self.configs[name] == value:
+                return False
+
+            self.configs[name] = value
+            return True
 
     def get_config(self, name: Optional[str] = None):
         """Get a single config value by name or all configs if name is None."""
@@ -265,6 +415,13 @@ class CameraObject:
             if name:
                 return copy.deepcopy(self.configs.get(name))
             return copy.deepcopy(self.configs)
+
+    def get_info(self, name: Optional[str] = None):
+        """Get a single info value by name or all infos if name is None."""
+        with self.lock:
+            if name:
+                return copy.deepcopy(self.infos.get(name))
+            return copy.deepcopy(self.infos)
 
     def _on_state_changed(self):
         """
@@ -327,130 +484,24 @@ class CameraObject:
         self.picam2.configure(self.video_config)
         self.picam2.start()
 
-    def load_profile(self, profile_filename: str) -> bool:
-        """Load and apply a camera profile created via save_profile().
-        Model mismatch is allowed and is handled by the frontend.
+    def apply_profile(self, profile: Dict) -> None:
         """
-        profile_path = os.path.join(self.profile_folder, profile_filename)
-        if not os.path.exists(profile_path):
-            logger.warning("Profile file not found: %s", profile_path)
-            return False
+        Apply a validated camera profile dict.
+        Profile format:
+        {
+            "info": {...},
+            "config": {...},
+            "controls": {...}
+        }
+        """
+        with self.lock:
+            self.infos.update(profile.get("info", {}))
+            self.configs.update(profile.get("config", {}))
+            self.controls.update(profile.get("controls", {}))
 
-        try:
-            with open(profile_path, "r") as f:
-                profile = json.load(f)
-
-            # Apply all top-level profile sections to matching object attributes
-            for top_key, value in profile.items():
-                if hasattr(self, top_key) and isinstance(value, dict):
-                    target = getattr(self, top_key)
-                    if isinstance(target, dict):
-                        target.update(value)
-                    else:
-                        logger.warning(
-                            "Profile key '%s' exists but is not a dict on CameraObject",
-                            top_key,
-                        )
-                else:
-                    logger.debug(
-                        "Ignoring unknown or invalid profile key '%s'", top_key
-                    )
-
-            # Reconfigure pipeline and sync controls after loading profile
-            self.reconfigure_video_pipeline()
-            self.sync_ui_settings()
-            self._update_active_profile(profile_filename)
-
-            logger.info("Camera profile '%s' loaded successfully", profile_filename)
-            return True
-
-        except Exception as e:
-            logger.error(
-                "Error loading camera profile '%s': %s",
-                profile_filename,
-                e,
-                exc_info=True,
-            )
-            return False
-
-    def load_active_profile(self) -> None:
-        """Load the active camera profile if configured."""
-
-        if not self.camera_info.get("Has_Config"):
-            return
-
-        profile_filename = self.camera_info.get("Config_Location")
-        if profile_filename:
-            self.load_profile(profile_filename)
-
-    def save_profile(self, filename: str) -> bool:
-        try:
-            if filename.lower().endswith(".json"):
-                filename = filename[:-5]
-
-            profile_path = os.path.join(self.profile_folder, f"{filename}.json")
-            # state = self.get_settings()
-
-            profile = {
-                "info": dict(self.info),
-                "config": dict(self.configs),
-                "controls": dict(self.controls),
-            }
-
-            with open(profile_path, "w") as f:
-                json.dump(profile, f, indent=2)
-
-            self._update_active_profile(f"{filename}.json")
-            logger.info("Camera profile saved: %s", profile_path)
-            return True
-
-        except Exception as e:
-            logger.error("Error saving profile: %s", e, exc_info=True)
-            return False
-
-
-    def _update_active_profile(self, profile_filename: str) -> None:
-        """Update camera-active-profile.json with the latest profile."""
-        try:
-            active_config = {"cameras": []}
-            if os.path.exists(self.camera_active_profile_path):
-                with open(self.camera_active_profile_path, "r") as f:
-                    active_config = json.load(f)
-
-            for camera in active_config.get("cameras", []):
-                if camera.get("Num") == self.camera_num:
-                    camera["Has_Config"] = True
-                    camera["Config_Location"] = profile_filename
-                    break
-
-            with open(self.camera_active_profile_path, "w") as f:
-                json.dump(active_config, f, indent=4)
-
-        except Exception as e:
-            logger.error("Failed to update camera-active-profile.json: %s", e, exc_info=True)
-
-    # def generate_profile(self) -> Dict:
-    #     file_name = os.path.join(self.profile_folder, "camera-module-info.json")
-
-    #     if not self.camera_info.get("Has_Config", False) or not os.path.exists(file_name):
-    #         self.camera_profile = {
-    #             "hflip": 0,
-    #             "vflip": 0,
-    #             "sensor_mode": 0,
-    #             "model": self.camera_info.get("Model", "Unknown"),
-    #             "resolutions": {
-    #                 "still_capture_resolution": 0,
-    #                 "recording_resolution": 0,
-    #                 "streaming_resolution": 0,
-    #             },
-    #             "saveRAW": False,
-    #             "controls": {},
-    #         }
-    #     else:
-    #         with open(file_name, "r") as file:
-    #             self.camera_profile = json.load(file)
-
-    #     return self.camera_profile
+        self.reconfigure_video_pipeline()
+        self.apply_controls()
+        self.sync_ui_settings()
 
     def _init_ui_settings_from_db(
         self,
